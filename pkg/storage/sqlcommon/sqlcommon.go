@@ -416,6 +416,7 @@ func Write(
 	deletes storage.Deletes,
 	writes storage.Writes,
 	now time.Time,
+	nowSQL string,
 ) error {
 	txn, err := dbInfo.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -464,13 +465,13 @@ func Write(
 				openfgav1.TupleOperation_TUPLE_OPERATION_DELETE,
 			)
 		}
-
+		var nilSlice []uint8
 		changelogBuilder = changelogBuilder.Values(
 			store, objectType, objectID,
 			tk.GetRelation(), tk.GetUser(),
-			"", nil, // Redact condition info for deletes since we only need the base triplet (object, relation, user).
+			"", nilSlice, // Redact condition info for deletes since we only need the base triplet (object, relation, user).
 			openfgav1.TupleOperation_TUPLE_OPERATION_DELETE,
-			id, sq.Expr("NOW()"),
+			id, sq.Expr(nowSQL),
 		)
 	}
 
@@ -501,7 +502,7 @@ func Write(
 				conditionName,
 				conditionContext,
 				id,
-				sq.Expr("NOW()"),
+				sq.Expr(nowSQL),
 			).
 			RunWith(txn). // Part of a txn.
 			ExecContext(ctx)
@@ -519,7 +520,7 @@ func Write(
 			conditionContext,
 			openfgav1.TupleOperation_TUPLE_OPERATION_WRITE,
 			id,
-			sq.Expr("NOW()"),
+			sq.Expr(nowSQL),
 		)
 	}
 
