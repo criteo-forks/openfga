@@ -22,6 +22,7 @@ func TestMigrateCommandRollbacks(t *testing.T) {
 	}
 	engines := []EngineConfig{
 		{Engine: "postgres"},
+		{Engine: "mssql"},
 		{Engine: "mysql"},
 		{Engine: "sqlite", MinVersion: 5},
 	}

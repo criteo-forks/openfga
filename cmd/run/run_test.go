@@ -792,6 +792,9 @@ func TestServerMetricsReporting(t *testing.T) {
 	t.Cleanup(func() {
 		goleak.VerifyNone(t)
 	})
+	t.Run("mssql", func(t *testing.T) {
+		testServerMetricsReporting(t, "mssql")
+	})
 	t.Run("mysql", func(t *testing.T) {
 		testServerMetricsReporting(t, "mysql")
 	})
@@ -1533,6 +1536,20 @@ func TestServerContext_datastoreConfig(t *testing.T) {
 			wantDSType:     nil,
 			wantSerializer: nil,
 			wantErr:        errors.New("invalid semicolon separator in query"),
+		},
+		{
+			name: "mssql_bad_uri",
+			config: &serverconfig.Config{
+				Datastore: serverconfig.DatastoreConfig{
+					Engine:   "mssql",
+					Username: "sa",
+					Password: "password",
+					URI:      "~!@#$%^&*()_+}{:<>?",
+				},
+			},
+			wantDSType:     nil,
+			wantSerializer: nil,
+			wantErr:        errors.New("parse mssql connection uri"),
 		},
 		{
 			name: "mysql_bad_uri",

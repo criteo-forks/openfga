@@ -13,6 +13,7 @@ import (
 
 	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/storage/memory"
+	"github.com/openfga/openfga/pkg/storage/mssql"
 	"github.com/openfga/openfga/pkg/storage/mysql"
 	"github.com/openfga/openfga/pkg/storage/postgres"
 	"github.com/openfga/openfga/pkg/storage/sqlcommon"
@@ -66,6 +67,8 @@ func MustBootstrapDatastore(t testing.TB, engine string) (storagefixtures.Datast
 		ds, err = mysql.New(uri, sqlcommon.NewConfig())
 	case "sqlite":
 		ds, err = sqlite.New(uri, sqlcommon.NewConfig())
+	case "mssql":
+		ds, err = mssql.New(uri, sqlcommon.NewConfig())
 	default:
 		t.Fatalf("unsupported datastore engine: %q", engine)
 	}

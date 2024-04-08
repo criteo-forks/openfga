@@ -1,4 +1,4 @@
-package postgres
+package mssql
 
 import (
 	"context"
@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // Kerberos Active Directory authentication
+
 	sq "github.com/Masterminds/squirrel"
 	"github.com/cenkalti/backoff/v4"
-	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver.
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"go.opentelemetry.io/otel"
@@ -29,13 +30,13 @@ import (
 	tupleUtils "github.com/openfga/openfga/pkg/tuple"
 )
 
-var tracer = otel.Tracer("openfga/pkg/storage/postgres")
+var tracer = otel.Tracer("openfga/pkg/storage/mssql")
 
 func startTrace(ctx context.Context, name string) (context.Context, trace.Span) {
 	return tracer.Start(ctx, "postgres."+name)
 }
 
-// Datastore provides a PostgreSQL based implementation of [storage.OpenFGADatastore].
+// MSSQL provides a MSSQL based implementation of [storage.OpenFGADatastore].
 type Datastore struct {
 	stbl                   sq.StatementBuilderType
 	db                     *sql.DB
@@ -54,7 +55,7 @@ func New(uri string, cfg *sqlcommon.Config) (*Datastore, error) {
 	if cfg.Username != "" || cfg.Password != "" {
 		parsed, err := url.Parse(uri)
 		if err != nil {
-			return nil, fmt.Errorf("parse postgres connection uri: %w", err)
+			return nil, fmt.Errorf("parse mssql connection uri: %w", err)
 		}
 
 		username := ""
@@ -80,10 +81,11 @@ func New(uri string, cfg *sqlcommon.Config) (*Datastore, error) {
 		uri = parsed.String()
 	}
 
-	db, err := sql.Open("pgx", uri)
+	db, err := sql.Open("sqlserver", uri)
 	if err != nil {
-		return nil, fmt.Errorf("initialize postgres connection: %w", err)
+		return nil, fmt.Errorf("initialize mssql connection: %w", err)
 	}
+
 	return NewWithDB(db, cfg)
 }
 
@@ -129,7 +131,7 @@ func NewWithDB(db *sql.DB, cfg *sqlcommon.Config) (*Datastore, error) {
 		}
 	}
 
-	stbl := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).RunWith(db)
+	stbl := sq.StatementBuilder.PlaceholderFormat(sq.AtP).RunWith(db)
 	dbInfo := sqlcommon.NewDBInfo(db, stbl, HandleSQLError)
 
 	return &Datastore{
@@ -184,8 +186,7 @@ func (s *Datastore) read(ctx context.Context, store string, tupleKey *openfgav1.
 
 	sb := s.stbl.
 		Select(
-			"store", "object_type", "object_id", "relation",
-			"_user",
+			"store", "object_type", "object_id", "relation", "_user",
 			"condition_name", "condition_context", "ulid", "inserted_at",
 		).
 		From("tuple").
@@ -211,8 +212,10 @@ func (s *Datastore) read(ctx context.Context, store string, tupleKey *openfgav1.
 	if options != nil && options.Pagination.From != "" {
 		sb = sb.Where(sq.GtOrEq{"ulid": options.Pagination.From})
 	}
+
 	if options != nil && options.Pagination.PageSize != 0 {
-		sb = sb.Limit(uint64(options.Pagination.PageSize + 1)) // + 1 is used to determine whether to return a continuation token.
+		limitQuery := fmt.Sprintf("OFFSET 0 ROWS FETCH FIRST %d ROWS ONLY", uint64(options.Pagination.PageSize+1))
+		sb = sb.Suffix(limitQuery) // + 1 is used to determine whether to return a continuation token.
 	}
 
 	rows, err := sb.QueryContext(ctx)
@@ -233,7 +236,7 @@ func (s *Datastore) Write(
 	ctx, span := startTrace(ctx, "Write")
 	defer span.End()
 
-	return sqlcommon.Write(ctx, s.dbInfo, store, deletes, writes, time.Now().UTC(), "NOW()")
+	return sqlcommon.Write(ctx, s.dbInfo, store, deletes, writes, time.Now().UTC(), "SYSUTCDATETIME()")
 }
 
 // ReadUserTuple see [storage.RelationshipTupleReader].ReadUserTuple.
@@ -248,10 +251,9 @@ func (s *Datastore) ReadUserTuple(ctx context.Context, store string, tupleKey *o
 	var conditionContext []byte
 	var record storage.TupleRecord
 
-	err := s.stbl.
+	sb := s.stbl.
 		Select(
-			"object_type", "object_id", "relation",
-			"_user",
+			"object_type", "object_id", "relation", "_user",
 			"condition_name", "condition_context",
 		).
 		From("tuple").
@@ -262,7 +264,9 @@ func (s *Datastore) ReadUserTuple(ctx context.Context, store string, tupleKey *o
 			"relation":    tupleKey.GetRelation(),
 			"_user":       tupleKey.GetUser(),
 			"user_type":   userType,
-		}).
+		})
+
+	err := sb.
 		QueryRowContext(ctx).
 		Scan(
 			&record.ObjectType,
@@ -272,6 +276,7 @@ func (s *Datastore) ReadUserTuple(ctx context.Context, store string, tupleKey *o
 			&conditionName,
 			&conditionContext,
 		)
+
 	if err != nil {
 		return nil, HandleSQLError(err)
 	}
@@ -303,8 +308,7 @@ func (s *Datastore) ReadUsersetTuples(
 
 	sb := s.stbl.
 		Select(
-			"store", "object_type", "object_id", "relation",
-			"_user",
+			"store", "object_type", "object_id", "relation", "_user",
 			"condition_name", "condition_context", "ulid", "inserted_at",
 		).
 		From("tuple").
@@ -325,18 +329,15 @@ func (s *Datastore) ReadUsersetTuples(
 		orConditions := sq.Or{}
 		for _, userset := range filter.AllowedUserTypeRestrictions {
 			if _, ok := userset.GetRelationOrWildcard().(*openfgav1.RelationReference_Relation); ok {
-				orConditions = append(orConditions, sq.Like{
-					"_user": userset.GetType() + ":%#" + userset.GetRelation(),
-				})
+				orConditions = append(orConditions, sq.Like{"_user": userset.GetType() + ":%#" + userset.GetRelation()})
 			}
 			if _, ok := userset.GetRelationOrWildcard().(*openfgav1.RelationReference_Wildcard); ok {
-				orConditions = append(orConditions, sq.Eq{
-					"_user": userset.GetType() + ":*",
-				})
+				orConditions = append(orConditions, sq.Eq{"_user": userset.GetType() + ":*"})
 			}
 		}
 		sb = sb.Where(orConditions)
 	}
+
 	rows, err := sb.QueryContext(ctx)
 	if err != nil {
 		return nil, HandleSQLError(err)
@@ -366,8 +367,7 @@ func (s *Datastore) ReadStartingWithUser(
 
 	builder := s.stbl.
 		Select(
-			"store", "object_type", "object_id", "relation",
-			"_user",
+			"store", "object_type", "object_id", "relation", "_user",
 			"condition_name", "condition_context", "ulid", "inserted_at",
 		).
 		From("tuple").
@@ -386,7 +386,6 @@ func (s *Datastore) ReadStartingWithUser(
 	if err != nil {
 		return nil, HandleSQLError(err)
 	}
-
 	return sqlcommon.NewSQLTupleIterator(rows), nil
 }
 
@@ -419,7 +418,8 @@ func (s *Datastore) ReadAuthorizationModels(ctx context.Context, store string, o
 		sb = sb.Where(sq.LtOrEq{"authorization_model_id": options.Pagination.From})
 	}
 	if options.Pagination.PageSize > 0 {
-		sb = sb.Limit(uint64(options.Pagination.PageSize + 1)) // + 1 is used to determine whether to return a continuation token.
+		limitQuery := fmt.Sprintf("OFFSET 0 ROWS FETCH FIRST %d ROWS ONLY", uint64(options.Pagination.PageSize+1))
+		sb = sb.Suffix(limitQuery) // + 1 is used to determine whether to return a continuation token.
 	}
 
 	rows, err := sb.QueryContext(ctx)
@@ -484,7 +484,28 @@ func (s *Datastore) WriteAuthorizationModel(ctx context.Context, store string, m
 	ctx, span := startTrace(ctx, "WriteAuthorizationModel")
 	defer span.End()
 
-	return sqlcommon.WriteAuthorizationModel(ctx, s.dbInfo, store, model)
+	typeDefinitions := model.GetTypeDefinitions()
+	schemaVersion := model.GetSchemaVersion()
+
+	if len(typeDefinitions) < 1 {
+		return nil
+	}
+
+	pbdata, err := proto.Marshal(model)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.stbl.
+		Insert("authorization_model").
+		Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
+		Values(store, model.GetId(), schemaVersion, "", sq.Expr("NULL"), sq.Expr(fmt.Sprintf("0x%x", pbdata))).
+		ExecContext(ctx)
+	if err != nil {
+		return HandleSQLError(err)
+	}
+
+	return nil
 }
 
 // CreateStore adds a new store to storage.
@@ -492,16 +513,39 @@ func (s *Datastore) CreateStore(ctx context.Context, store *openfgav1.Store) (*o
 	ctx, span := startTrace(ctx, "CreateStore")
 	defer span.End()
 
+	var createdAt time.Time
 	var id, name string
-	var createdAt, updatedAt time.Time
 
-	err := s.stbl.
+	txn, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return nil, HandleSQLError(err)
+	}
+	defer func() {
+		_ = txn.Rollback()
+	}()
+
+	_, err = s.stbl.
 		Insert("store").
 		Columns("id", "name", "created_at", "updated_at").
-		Values(store.GetId(), store.GetName(), sq.Expr("NOW()"), sq.Expr("NOW()")).
-		Suffix("returning id, name, created_at, updated_at").
+		Values(store.GetId(), store.GetName(), sq.Expr("SYSUTCDATETIME()"), sq.Expr("SYSUTCDATETIME()")).
+		RunWith(txn).
+		ExecContext(ctx)
+	if err != nil {
+		return nil, HandleSQLError(err)
+	}
+
+	err = s.stbl.
+		Select("id", "name", "created_at").
+		From("store").
+		Where(sq.Eq{"id": store.GetId()}).
+		RunWith(txn).
 		QueryRowContext(ctx).
-		Scan(&id, &name, &createdAt, &updatedAt)
+		Scan(&id, &name, &createdAt)
+	if err != nil {
+		return nil, HandleSQLError(err)
+	}
+
+	err = txn.Commit()
 	if err != nil {
 		return nil, HandleSQLError(err)
 	}
@@ -510,7 +554,7 @@ func (s *Datastore) CreateStore(ctx context.Context, store *openfgav1.Store) (*o
 		Id:        id,
 		Name:      name,
 		CreatedAt: timestamppb.New(createdAt),
-		UpdatedAt: timestamppb.New(updatedAt),
+		UpdatedAt: timestamppb.New(createdAt),
 	}, nil
 }
 
@@ -570,8 +614,10 @@ func (s *Datastore) ListStores(ctx context.Context, options storage.ListStoresOp
 	if options.Pagination.From != "" {
 		sb = sb.Where(sq.GtOrEq{"id": options.Pagination.From})
 	}
+
 	if options.Pagination.PageSize > 0 {
-		sb = sb.Limit(uint64(options.Pagination.PageSize + 1)) // + 1 is used to determine whether to return a continuation token.
+		limitQuery := fmt.Sprintf("OFFSET 0 ROWS FETCH FIRST %d ROWS ONLY", uint64(options.Pagination.PageSize+1))
+		sb = sb.Suffix(limitQuery) // + 1 is used to determine whether to return a continuation token.
 	}
 
 	rows, err := sb.QueryContext(ctx)
@@ -616,7 +662,7 @@ func (s *Datastore) DeleteStore(ctx context.Context, id string) error {
 
 	_, err := s.stbl.
 		Update("store").
-		Set("deleted_at", sq.Expr("NOW()")).
+		Set("deleted_at", sq.Expr("SYSUTCDATETIME()")).
 		Where(sq.Eq{"id": id}).
 		ExecContext(ctx)
 	if err != nil {
@@ -636,12 +682,34 @@ func (s *Datastore) WriteAssertions(ctx context.Context, store, modelID string, 
 		return err
 	}
 
+	txn, txErr := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if txErr != nil {
+		return HandleSQLError(txErr)
+	}
+	defer func() {
+		_ = txn.Rollback()
+	}()
+
+	// HACK: for insert or update
+	_, err = s.stbl.
+		Delete("assertion").
+		Where(sq.Eq{"store": store, "authorization_model_id": modelID}).
+		RunWith(txn).
+		ExecContext(ctx)
+	if err != nil {
+		return HandleSQLError(err)
+	}
 	_, err = s.stbl.
 		Insert("assertion").
 		Columns("store", "authorization_model_id", "assertions").
 		Values(store, modelID, marshalledAssertions).
-		Suffix("ON CONFLICT (store, authorization_model_id) DO UPDATE SET assertions = ?", marshalledAssertions).
+		RunWith(txn).
 		ExecContext(ctx)
+	if err != nil {
+		return HandleSQLError(err)
+	}
+
+	err = txn.Commit()
 	if err != nil {
 		return HandleSQLError(err)
 	}
@@ -695,14 +763,12 @@ func (s *Datastore) ReadChanges(ctx context.Context, store string, filter storag
 
 	sb := s.stbl.
 		Select(
-			"ulid", "object_type", "object_id", "relation",
-			"_user",
-			"operation",
+			"ulid", "object_type", "object_id", "relation", "_user", "operation",
 			"condition_name", "condition_context", "inserted_at",
 		).
 		From("changelog").
 		Where(sq.Eq{"store": store}).
-		Where(fmt.Sprintf("inserted_at < NOW() - interval '%dms'", horizonOffset.Milliseconds())).
+		Where(fmt.Sprintf("inserted_at <= DATEADD(MICROSECOND, -%d, SYSUTCDATETIME())", horizonOffset.Microseconds())).
 		OrderBy(orderBy)
 
 	if objectTypeFilter != "" {
@@ -712,7 +778,8 @@ func (s *Datastore) ReadChanges(ctx context.Context, store string, filter storag
 		sb = sqlcommon.AddFromUlid(sb, options.Pagination.From, options.SortDesc)
 	}
 	if options.Pagination.PageSize > 0 {
-		sb = sb.Limit(uint64(options.Pagination.PageSize)) // + 1 is NOT used here as we always return a continuation token.
+		limitQuery := fmt.Sprintf("OFFSET 0 ROWS FETCH FIRST %d ROWS ONLY", uint64(options.Pagination.PageSize))
+		sb = sb.Suffix(limitQuery) // + 1 is NOT used here as we always return a continuation token.
 	}
 
 	rows, err := sb.QueryContext(ctx)

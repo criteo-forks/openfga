@@ -69,6 +69,10 @@ func TestCheckPostgres(t *testing.T) {
 	testRunAll(t, "postgres")
 }
 
+func TestCheckMSSQL(t *testing.T) {
+	testRunAll(t, "mssql")
+}
+
 func TestCheckMySQL(t *testing.T) {
 	testRunAll(t, "mysql")
 }

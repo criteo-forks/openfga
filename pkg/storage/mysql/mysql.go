@@ -219,7 +219,7 @@ func (s *Datastore) Write(
 	ctx, span := startTrace(ctx, "Write")
 	defer span.End()
 
-	return sqlcommon.Write(ctx, s.dbInfo, store, deletes, writes, time.Now().UTC())
+	return sqlcommon.Write(ctx, s.dbInfo, store, deletes, writes, time.Now().UTC(), "NOW()")
 }
 
 // ReadUserTuple see [storage.RelationshipTupleReader].ReadUserTuple.
