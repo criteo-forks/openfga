@@ -58,6 +58,8 @@ func (m memoryTestContainer) GetSecondaryConnectionURI(includeCredentials bool) 
 // The resources used by the test engine will be cleaned up after the test has finished.
 func RunDatastoreTestContainer(t testing.TB, engine string) DatastoreTestContainer {
 	switch engine {
+	case "mssql":
+		return NewMSSQLTestContainer().RunMSSQLTestContainer(t)
 	case "mysql":
 		return NewMySQLTestContainer().RunMySQLTestContainer(t)
 	case "postgres":

@@ -1,12 +1,14 @@
-package postgres
+package mssql
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -22,8 +24,8 @@ import (
 	"github.com/openfga/openfga/pkg/typesystem"
 )
 
-func TestPostgresDatastore(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+func TestMSSQLDatastore(t *testing.T) {
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -42,8 +44,8 @@ func TestPostgresDatastore(t *testing.T) {
 	t.Run("WriteTuplesWithMaxTuplesPerWrite", test.WriteTuplesWithMaxTuplesPerWrite(dsCustom, context.Background()))
 }
 
-func TestPostgresDatastoreStartup(t *testing.T) {
-	primaryDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+func TestMSSQLDatastoreStartup(t *testing.T) {
+	primaryDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 	primaryURI := primaryDatastore.GetConnectionURI(true)
 
 	cfg := sqlcommon.NewConfig()
@@ -58,8 +60,10 @@ func TestPostgresDatastoreStartup(t *testing.T) {
 	require.True(t, status.IsReady)
 }
 
-func TestPostgresDatastoreStatusWithSecondaryDB(t *testing.T) {
-	primaryDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+func TestMSSQLDatastoreStatusWithSecondaryDB(t *testing.T) {
+	t.Skip("Skipping test because this feature is not supported yet.")
+
+	primaryDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 	err := primaryDatastore.CreateSecondary(t)
 	require.NoError(t, err)
 
@@ -79,8 +83,8 @@ func TestPostgresDatastoreStatusWithSecondaryDB(t *testing.T) {
 	require.Equal(t, "primary: ready, secondary: ready", status.Message)
 }
 
-func TestPostgresDatastoreAfterCloseIsNotReady(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+func TestMSSQLDatastoreAfterCloseIsNotReady(t *testing.T) {
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -109,7 +113,7 @@ func TestReadEnsureNoOrder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+			testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 			uri := testDatastore.GetConnectionURI(true)
 			cfg := sqlcommon.NewConfig()
@@ -125,7 +129,7 @@ func TestReadEnsureNoOrder(t *testing.T) {
 			thirdTuple := tuple.NewTupleKey("doc:object_id_3", "relation", "user:user_3")
 
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "postgres", "NOW()"),
+				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
 				store,
 				[]*openfgav1.TupleKeyWithoutCondition{},
 				[]*openfgav1.TupleKey{firstTuple},
@@ -135,7 +139,7 @@ func TestReadEnsureNoOrder(t *testing.T) {
 
 			// Tweak time so that ULID is smaller.
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "postgres", "NOW()"),
+				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
 				store,
 				[]*openfgav1.TupleKeyWithoutCondition{},
 				[]*openfgav1.TupleKey{secondTuple},
@@ -144,7 +148,7 @@ func TestReadEnsureNoOrder(t *testing.T) {
 			require.NoError(t, err)
 
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "postgres", "NOW()"),
+				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
 				store,
 				[]*openfgav1.TupleKeyWithoutCondition{},
 				[]*openfgav1.TupleKey{thirdTuple},
@@ -214,7 +218,7 @@ func TestCtxCancel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+			testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 			uri := testDatastore.GetConnectionURI(true)
 			cfg := sqlcommon.NewConfig()
@@ -230,7 +234,7 @@ func TestCtxCancel(t *testing.T) {
 			thirdTuple := tuple.NewTupleKey("doc:object_id_3", "relation", "user:user_3")
 
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "postgres", "NOW()"),
+				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
 				store,
 				[]*openfgav1.TupleKeyWithoutCondition{},
 				[]*openfgav1.TupleKey{firstTuple},
@@ -240,7 +244,7 @@ func TestCtxCancel(t *testing.T) {
 
 			// Tweak time so that ULID is smaller.
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "postgres", "NOW()"),
+				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
 				store,
 				[]*openfgav1.TupleKeyWithoutCondition{},
 				[]*openfgav1.TupleKey{secondTuple},
@@ -249,7 +253,7 @@ func TestCtxCancel(t *testing.T) {
 			require.NoError(t, err)
 
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "postgres", "NOW()"),
+				sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
 				store,
 				[]*openfgav1.TupleKeyWithoutCondition{},
 				[]*openfgav1.TupleKey{thirdTuple},
@@ -278,7 +282,7 @@ func TestCtxCancel(t *testing.T) {
 
 // TestReadPageEnsureNoOrder asserts that the read page is ordered by ulid.
 func TestReadPageEnsureOrder(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -293,7 +297,7 @@ func TestReadPageEnsureOrder(t *testing.T) {
 	secondTuple := tuple.NewTupleKey("doc:object_id_2", "relation", "user:user_2")
 
 	err = sqlcommon.Write(ctx,
-		sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "postgres", "NOW()"),
+		sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
 		store,
 		[]*openfgav1.TupleKeyWithoutCondition{},
 		[]*openfgav1.TupleKey{firstTuple},
@@ -303,7 +307,7 @@ func TestReadPageEnsureOrder(t *testing.T) {
 
 	// Tweak time so that ULID is smaller.
 	err = sqlcommon.Write(ctx,
-		sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "postgres", "NOW()"),
+		sqlcommon.NewDBInfo(ds.primaryDB, ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
 		store,
 		[]*openfgav1.TupleKeyWithoutCondition{},
 		[]*openfgav1.TupleKey{secondTuple},
@@ -327,7 +331,7 @@ func TestReadPageEnsureOrder(t *testing.T) {
 }
 
 func TestReadAuthorizationModelUnmarshallError(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -344,7 +348,7 @@ func TestReadAuthorizationModelUnmarshallError(t *testing.T) {
 	require.NoError(t, err)
 	pbdata := []byte{0x01, 0x02, 0x03}
 
-	_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES ($1, $2, $3, $4, $5, $6)", store, modelID, schemaVersion, "document", bytes, pbdata)
+	_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, @p6)", store, modelID, schemaVersion, "document", bytes, pbdata)
 	require.NoError(t, err)
 
 	_, err = ds.ReadAuthorizationModel(ctx, store, modelID)
@@ -353,7 +357,7 @@ func TestReadAuthorizationModelUnmarshallError(t *testing.T) {
 }
 
 func TestReadAuthorizationModelReturnValue(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -369,7 +373,12 @@ func TestReadAuthorizationModelReturnValue(t *testing.T) {
 	bytes, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "document"})
 	require.NoError(t, err)
 
-	_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES ($1, $2, $3, $4, $5, $6)", store, modelID, schemaVersion, "document", bytes, nil)
+	// HACK: Use squirrel for mapping properties (to avoid issues with mapping data to nvarbinary(max))
+	_, err = ds.primaryStbl.
+		Insert("authorization_model").
+		Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
+		Values(store, modelID, schemaVersion, "document", sq.Expr(fmt.Sprintf("0x%x", bytes)), sq.Expr("NULL")).
+		ExecContext(ctx)
 
 	require.NoError(t, err)
 
@@ -382,7 +391,7 @@ func TestReadAuthorizationModelReturnValue(t *testing.T) {
 }
 
 func TestFindLatestModel(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -411,15 +420,25 @@ func TestFindLatestModel(t *testing.T) {
 		// write type "document"
 		bytesDocumentType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "document"})
 		require.NoError(t, err)
-		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES ($1, $2, $3, $4, $5, $6)",
-			store, modelID, schemaVersion, "document", bytesDocumentType, nil)
+
+		// HACK: Use squirrel for mapping properties (to avoid issues with mapping data to nvarbinary(max))
+		_, err = ds.primaryStbl.
+			Insert("authorization_model").
+			Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
+			Values(store, modelID, schemaVersion, "document", bytesDocumentType, sq.Expr("NULL")).
+			ExecContext(ctx)
 		require.NoError(t, err)
 
 		// write type "user"
 		bytesUserType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "user"})
 		require.NoError(t, err)
-		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES ($1, $2, $3, $4, $5, $6)",
-			store, modelID, schemaVersion, "user", bytesUserType, nil)
+
+		// HACK: Use squirrel for mapping properties (to avoid issues with mapping data to nvarbinary(max))
+		_, err = ds.primaryStbl.
+			Insert("authorization_model").
+			Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
+			Values(store, modelID, schemaVersion, "user", bytesUserType, sq.Expr("NULL")).
+			ExecContext(ctx)
 		require.NoError(t, err)
 
 		latestModel, err = ds.FindLatestAuthorizationModel(ctx, store)
@@ -432,15 +451,25 @@ func TestFindLatestModel(t *testing.T) {
 		// write type "document"
 		bytesDocumentType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "document"})
 		require.NoError(t, err)
-		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES ($1, $2, $3, $4, $5, $6)",
-			store, modelID, schemaVersion, "document", bytesDocumentType, nil)
+
+		// HACK: Use squirrel for mapping properties (to avoid issues with mapping data to nvarbinary(max))
+		_, err = ds.primaryStbl.
+			Insert("authorization_model").
+			Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
+			Values(store, modelID, schemaVersion, "document", bytesDocumentType, sq.Expr("NULL")).
+			ExecContext(ctx)
 		require.NoError(t, err)
 
 		// write type "user"
 		bytesUserType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "user"})
 		require.NoError(t, err)
-		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES ($1, $2, $3, $4, $5, $6)",
-			store, modelID, schemaVersion, "user", bytesUserType, nil)
+
+		// HACK: Use squirrel for mapping properties (to avoid issues with mapping data to nvarbinary(max))
+		_, err = ds.primaryStbl.
+			Insert("authorization_model").
+			Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
+			Values(store, modelID, schemaVersion, "user", bytesUserType, sq.Expr("NULL")).
+			ExecContext(ctx)
 		require.NoError(t, err)
 
 		latestModel, err := ds.FindLatestAuthorizationModel(ctx, store)
@@ -464,7 +493,7 @@ func TestFindLatestModel(t *testing.T) {
 // migration 005_add_conditions_to_tuples can be successfully read.
 func TestAllowNullCondition(t *testing.T) {
 	ctx := context.Background()
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -476,11 +505,12 @@ func TestAllowNullCondition(t *testing.T) {
 		INSERT INTO tuple (
 			store, object_type, object_id, relation, _user, user_type, ulid,
 			condition_name, condition_context, inserted_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW());
+		) VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, NULL, SYSUTCDATETIME());
 	`
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
 	_, err = ds.primaryDB.ExecContext(
 		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne", "user",
-		ulid.Make().String(), nil, nil,
+		ulid.Make().String(), nil,
 	)
 	require.NoError(t, err)
 
@@ -538,17 +568,18 @@ func TestAllowNullCondition(t *testing.T) {
 	INSERT INTO changelog (
 		store, object_type, object_id, relation, _user, ulid,
 		condition_name, condition_context, inserted_at, operation
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9);
+	) VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7, NULL, SYSUTCDATETIME(), @p8);
 `
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
 	_, err = ds.primaryDB.ExecContext(
 		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne",
-		ulid.Make().String(), nil, nil, openfgav1.TupleOperation_TUPLE_OPERATION_WRITE,
+		ulid.Make().String(), nil, openfgav1.TupleOperation_TUPLE_OPERATION_WRITE,
 	)
 	require.NoError(t, err)
 
 	_, err = ds.primaryDB.ExecContext(
 		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne",
-		ulid.Make().String(), nil, nil, openfgav1.TupleOperation_TUPLE_OPERATION_DELETE,
+		ulid.Make().String(), nil, openfgav1.TupleOperation_TUPLE_OPERATION_DELETE,
 	)
 	require.NoError(t, err)
 
@@ -567,7 +598,7 @@ func TestAllowNullCondition(t *testing.T) {
 // needs to change, we'll likely need to introduce a series of data migrations.
 func TestMarshalledAssertions(t *testing.T) {
 	ctx := context.Background()
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -576,10 +607,11 @@ func TestMarshalledAssertions(t *testing.T) {
 	defer ds.Close()
 
 	// Note: this represents an assertion written on v1.3.7.
+	// HACK: Convert DECODE since it's not supported in MSSQL syntax
 	stmt := `
 		INSERT INTO assertion (
 			store, authorization_model_id, assertions
-		) VALUES ($1, $2, DECODE('0a2b0a270a12666f6c6465723a323032312d62756467657412056f776e65721a0a757365723a616e6e657a1001','hex'));
+		) VALUES (@p1, @p2, CONVERT(varbinary(max), '0a2b0a270a12666f6c6465723a323032312d62756467657412056f776e65721a0a757365723a616e6e657a1001', 2));
 	`
 	_, err = ds.primaryDB.ExecContext(ctx, stmt, "store", "model")
 	require.NoError(t, err)

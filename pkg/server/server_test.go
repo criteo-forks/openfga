@@ -37,6 +37,7 @@ import (
 	"github.com/openfga/openfga/pkg/server/test"
 	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/storage/memory"
+	"github.com/openfga/openfga/pkg/storage/mssql"
 	"github.com/openfga/openfga/pkg/storage/mysql"
 	"github.com/openfga/openfga/pkg/storage/postgres"
 	"github.com/openfga/openfga/pkg/storage/sqlcommon"
@@ -59,7 +60,7 @@ func init() {
 }
 
 func ExampleNewServerWithOpts() {
-	datastore := memory.New() // other supported datastores include Postgres, MySQL and SQLite
+	datastore := memory.New() // other supported datastores include Postgres, MSSQL, MySQL and SQLite
 	defer datastore.Close()
 
 	openfga, err := NewServerWithOpts(WithDatastore(datastore),
@@ -243,7 +244,7 @@ func TestServerPanicIfValidationsFail(t *testing.T) {
 
 	t.Run("invalid_dialect", func(t *testing.T) {
 		require.PanicsWithValue(t, `failed to set database dialect: "invalid-dialect": unknown dialect`, func() {
-			sqlcommon.NewDBInfo(nil, sq.StatementBuilder, nil, "invalid-dialect")
+			sqlcommon.NewDBInfo(nil, sq.StatementBuilder, nil, "invalid-dialect", "invalid-now")
 		})
 	})
 
@@ -283,7 +284,7 @@ func TestServerPanicIfValidationsFail(t *testing.T) {
 
 func TestServerNotReadyDueToDatastoreRevision(t *testing.T) {
 	// skipping sqlite here because the lowest supported schema revision is 4
-	engines := []string{"postgres", "mysql"}
+	engines := []string{"postgres", "mssql", "mysql"}
 
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
@@ -422,11 +423,40 @@ func TestServerWithMemoryDatastore(t *testing.T) {
 	test.RunAllTests(t, ds)
 }
 
+func TestServerWithMSSQLDatastore(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+	_, ds, _ := util.MustBootstrapDatastore(t, "mssql")
+
+	test.RunAllTests(t, ds)
+}
+
 func TestServerWithMySQLDatastore(t *testing.T) {
 	t.Cleanup(func() {
 		goleak.VerifyNone(t)
 	})
 	_, ds, _ := util.MustBootstrapDatastore(t, "mysql")
+
+	test.RunAllTests(t, ds)
+}
+
+func TestServerWithMSSQLDatastoreAndExplicitCredentials(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
+
+	uri := testDatastore.GetConnectionURI(false)
+	ds, err := mssql.New(
+		uri,
+		sqlcommon.NewConfig(
+			sqlcommon.WithUsername(testDatastore.GetUsername()),
+			sqlcommon.WithPassword(testDatastore.GetPassword()),
+		),
+	)
+	require.NoError(t, err)
+	defer ds.Close()
 
 	test.RunAllTests(t, ds)
 }
@@ -816,6 +846,19 @@ func BenchmarkOpenFGAServer(b *testing.B) {
 
 	b.Run("BenchmarkMemoryDatastore", func(b *testing.B) {
 		ds := memory.New()
+		b.Cleanup(ds.Close)
+		test.RunAllBenchmarks(b, ds)
+	})
+
+	b.Run("BenchmarkMSSQLDatastore", func(b *testing.B) {
+		testDatastore := storagefixtures.RunDatastoreTestContainer(b, "mssql")
+
+		uri := testDatastore.GetConnectionURI(true)
+		ds, err := mssql.New(uri, sqlcommon.NewConfig(
+			sqlcommon.WithMaxOpenConns(10),
+			sqlcommon.WithMaxIdleConns(10),
+		))
+		require.NoError(b, err)
 		b.Cleanup(ds.Close)
 		test.RunAllBenchmarks(b, ds)
 	})

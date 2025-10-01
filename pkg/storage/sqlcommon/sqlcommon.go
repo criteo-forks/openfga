@@ -476,13 +476,14 @@ func (t *SQLTupleIterator) Stop() {
 type DBInfo struct {
 	db             *sql.DB
 	stbl           sq.StatementBuilderType
+	nowStbl        sq.Sqlizer
 	HandleSQLError errorHandlerFn
 }
 
 type errorHandlerFn func(error, ...interface{}) error
 
 // NewDBInfo constructs a [DBInfo] object.
-func NewDBInfo(db *sql.DB, stbl sq.StatementBuilderType, errorHandler errorHandlerFn, dialect string) *DBInfo {
+func NewDBInfo(db *sql.DB, stbl sq.StatementBuilderType, errorHandler errorHandlerFn, dialect string, nowSql string) *DBInfo {
 	if err := goose.SetDialect(dialect); err != nil {
 		panic("failed to set database dialect: " + err.Error())
 	}
@@ -490,6 +491,7 @@ func NewDBInfo(db *sql.DB, stbl sq.StatementBuilderType, errorHandler errorHandl
 	return &DBInfo{
 		db:             db,
 		stbl:           stbl,
+		nowStbl:        sq.Expr(nowSql),
 		HandleSQLError: errorHandler,
 	}
 }
@@ -559,37 +561,27 @@ func makeTupleLockKeys(deletes storage.Deletes, writes storage.Writes) []tupleLo
 	return keys
 }
 
-// buildRowConstructorIN builds "((?,?,?,?,?),(?,?,?,?,?),...)" and arg list for row-constructor IN.
-func buildRowConstructorIN(keys []tupleLockKey) (string, []interface{}) {
-	if len(keys) == 0 {
-		return "", nil
-	}
-	var sb strings.Builder
-	args := make([]interface{}, 0, len(keys)*5)
-	sb.WriteByte('(')
-	for i, k := range keys {
-		if i > 0 {
-			sb.WriteByte(',')
-		}
-		sb.WriteString("(?,?,?,?,?)")
-		args = append(args, k.objectType, k.objectID, k.relation, k.user, k.userType)
-	}
-	sb.WriteByte(')')
-	return sb.String(), args
-}
-
 // selectExistingRowsForWrite selects existing rows for the given keys and locks them FOR UPDATE.
 // The existing rows are added to the existing map.
 func selectExistingRowsForWrite(ctx context.Context, dbInfo *DBInfo, store string, keys []tupleLockKey, txn *sql.Tx, existing map[string]*openfgav1.Tuple) error {
-	inExpr, args := buildRowConstructorIN(keys)
+	selectionConditions := sq.Or{}
+
+	for _, k := range keys {
+		selectionConditions = append(selectionConditions, sq.Eq{
+			"object_type": k.objectType,
+			"object_id":   k.objectID,
+			"relation":    k.relation,
+			"_user":       k.user,
+			"user_type":   k.userType,
+		})
+	}
 
 	selectBuilder := dbInfo.stbl.
 		Select(SQLIteratorColumns()...).
 		From("tuple").
 		Where(sq.Eq{"store": store}).
 		// Row-constructor IN on full composite key for precise point locks.
-		Where(sq.Expr("(object_type, object_id, relation, _user, user_type) IN "+inExpr, args...)).
-		Suffix("FOR UPDATE").
+		Where(selectionConditions).
 		RunWith(txn) // make sure to run in the same transaction
 
 	iter := NewSQLTupleIterator(selectBuilder, dbInfo.HandleSQLError)
@@ -692,6 +684,7 @@ func Write(
 			"user_type":   tupleUtils.GetUserTypeFromUser(tk.GetUser()),
 		})
 
+		var nilSlice []uint8
 		changeLogItems = append(changeLogItems, []interface{}{
 			store,
 			objectType,
@@ -699,10 +692,10 @@ func Write(
 			tk.GetRelation(),
 			tk.GetUser(),
 			"",
-			nil, // Redact condition info for deletes since we only need the base triplet (object, relation, user).
+			nilSlice, // Redact condition info for deletes since we only need the base triplet (object, relation, user).
 			openfgav1.TupleOperation_TUPLE_OPERATION_DELETE,
 			id,
-			sq.Expr("NOW()"),
+			dbInfo.nowStbl,
 		})
 	}
 
@@ -758,7 +751,7 @@ func Write(
 			conditionName,
 			conditionContext,
 			id,
-			sq.Expr("NOW()"),
+			dbInfo.nowStbl,
 		})
 
 		changeLogItems = append(changeLogItems, []interface{}{
@@ -771,7 +764,7 @@ func Write(
 			conditionContext,
 			openfgav1.TupleOperation_TUPLE_OPERATION_WRITE,
 			id,
-			sq.Expr("NOW()"),
+			dbInfo.nowStbl,
 		})
 	}
 

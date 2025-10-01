@@ -146,7 +146,7 @@ func configureDB(db *sql.DB, cfg *sqlcommon.Config, dbName string) (*sqlcommon.D
 	}
 
 	stbl = sq.StatementBuilder.PlaceholderFormat(sq.Dollar).RunWith(db)
-	dbInfo := sqlcommon.NewDBInfo(db, stbl, HandleSQLError, "postgres")
+	dbInfo := sqlcommon.NewDBInfo(db, stbl, HandleSQLError, "postgres", "NOW()")
 
 	return dbInfo, stbl, collector, nil
 }

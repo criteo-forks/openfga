@@ -53,6 +53,30 @@ func RunMigrations(cfg MigrationConfig) error {
 	case "memory":
 		log.Info("no migrations to run for `memory` datastore")
 		return nil
+	case "mssql":
+		driver = "sqlserver"
+		migrationsPath = assets.MSSQLMigrationDir
+		var username, password string
+
+		// Parse the database uri with url.Parse() and update username/password, if set via flags
+		dbURI, err := url.Parse(uri)
+		if err != nil {
+			return fmt.Errorf("invalid database uri: %v", err)
+		}
+		if cfg.Username != "" {
+			username = cfg.Username
+		} else if dbURI.User != nil {
+			username = dbURI.User.Username()
+		}
+		if cfg.Password != "" {
+			password = cfg.Password
+		} else if dbURI.User != nil {
+			password, _ = dbURI.User.Password()
+		}
+		dbURI.User = url.UserPassword(username, password)
+
+		// Replace CLI uri with the one we just updated.
+		uri = dbURI.String()
 	case "mysql":
 		driver = "mysql"
 		migrationsPath = assets.MySQLMigrationDir
