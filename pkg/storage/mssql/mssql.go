@@ -826,7 +826,7 @@ func (s *Datastore) ReadChanges(ctx context.Context, store string, filter storag
 		).
 		From("changelog").
 		Where(sq.Eq{"store": store}).
-		Where(fmt.Sprintf("inserted_at < DATEADD(MICROSECOND, -%d, SYSUTCDATETIME())", horizonOffset.Milliseconds())).
+		Where(fmt.Sprintf("inserted_at <= DATEADD(MICROSECOND, -%d, SYSUTCDATETIME())", horizonOffset.Milliseconds())).
 		OrderBy(orderBy)
 
 	if objectTypeFilter != "" {
