@@ -4,11 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
-	sq "github.com/Masterminds/squirrel"
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -373,13 +371,8 @@ func TestReadAuthorizationModelReturnValue(t *testing.T) {
 	bytes, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "document"})
 	require.NoError(t, err)
 
-	// HACK: Use squirrel for mapping properties (to avoid issues with mapping data to nvarbinary(max))
-	_, err = ds.primaryStbl.
-		Insert("authorization_model").
-		Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
-		Values(store, modelID, schemaVersion, "document", sq.Expr(fmt.Sprintf("0x%x", bytes)), sq.Expr("NULL")).
-		ExecContext(ctx)
-
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+	_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, NULL)", store, modelID, schemaVersion, "document", bytes)
 	require.NoError(t, err)
 
 	res, err := ds.ReadAuthorizationModel(ctx, store, modelID)
@@ -421,24 +414,16 @@ func TestFindLatestModel(t *testing.T) {
 		bytesDocumentType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "document"})
 		require.NoError(t, err)
 
-		// HACK: Use squirrel for mapping properties (to avoid issues with mapping data to nvarbinary(max))
-		_, err = ds.primaryStbl.
-			Insert("authorization_model").
-			Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
-			Values(store, modelID, schemaVersion, "document", bytesDocumentType, sq.Expr("NULL")).
-			ExecContext(ctx)
+		// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, NULL)", store, modelID, schemaVersion, "document", bytesDocumentType)
 		require.NoError(t, err)
 
 		// write type "user"
 		bytesUserType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "user"})
 		require.NoError(t, err)
 
-		// HACK: Use squirrel for mapping properties (to avoid issues with mapping data to nvarbinary(max))
-		_, err = ds.primaryStbl.
-			Insert("authorization_model").
-			Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
-			Values(store, modelID, schemaVersion, "user", bytesUserType, sq.Expr("NULL")).
-			ExecContext(ctx)
+		// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, NULL)", store, modelID, schemaVersion, "user", bytesUserType)
 		require.NoError(t, err)
 
 		latestModel, err = ds.FindLatestAuthorizationModel(ctx, store)
@@ -452,24 +437,16 @@ func TestFindLatestModel(t *testing.T) {
 		bytesDocumentType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "document"})
 		require.NoError(t, err)
 
-		// HACK: Use squirrel for mapping properties (to avoid issues with mapping data to nvarbinary(max))
-		_, err = ds.primaryStbl.
-			Insert("authorization_model").
-			Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
-			Values(store, modelID, schemaVersion, "document", bytesDocumentType, sq.Expr("NULL")).
-			ExecContext(ctx)
+		// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, NULL)", store, modelID, schemaVersion, "document", bytesDocumentType)
 		require.NoError(t, err)
 
 		// write type "user"
 		bytesUserType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "user"})
 		require.NoError(t, err)
 
-		// HACK: Use squirrel for mapping properties (to avoid issues with mapping data to nvarbinary(max))
-		_, err = ds.primaryStbl.
-			Insert("authorization_model").
-			Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
-			Values(store, modelID, schemaVersion, "user", bytesUserType, sq.Expr("NULL")).
-			ExecContext(ctx)
+		// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, NULL)", store, modelID, schemaVersion, "user", bytesUserType)
 		require.NoError(t, err)
 
 		latestModel, err := ds.FindLatestAuthorizationModel(ctx, store)
@@ -501,16 +478,17 @@ func TestAllowNullCondition(t *testing.T) {
 	require.NoError(t, err)
 	defer ds.Close()
 
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
 	stmt := `
 		INSERT INTO tuple (
 			store, object_type, object_id, relation, _user, user_type, ulid,
 			condition_name, condition_context, inserted_at
-		) VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, NULL, SYSUTCDATETIME());
+		) VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7, NULL, NULL, SYSUTCDATETIME());
 	`
 	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
 	_, err = ds.primaryDB.ExecContext(
 		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne", "user",
-		ulid.Make().String(), nil,
+		ulid.Make().String(),
 	)
 	require.NoError(t, err)
 
@@ -536,9 +514,10 @@ func TestAllowNullCondition(t *testing.T) {
 	require.Equal(t, tk, userTuple.GetKey())
 
 	tk2 := tuple.NewTupleKey("folder:2022-budget", "viewer", "user:anne")
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
 	_, err = ds.primaryDB.ExecContext(
 		ctx, stmt, "store", "folder", "2022-budget", "viewer", "user:anne", "userset",
-		ulid.Make().String(), nil, nil,
+		ulid.Make().String(),
 	)
 
 	require.NoError(t, err)
@@ -568,18 +547,19 @@ func TestAllowNullCondition(t *testing.T) {
 	INSERT INTO changelog (
 		store, object_type, object_id, relation, _user, ulid,
 		condition_name, condition_context, inserted_at, operation
-	) VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7, NULL, SYSUTCDATETIME(), @p8);
+	) VALUES (@p1, @p2, @p3, @p4, @p5, @p6, NULL, NULL, SYSUTCDATETIME(), @p7);
 `
 	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
 	_, err = ds.primaryDB.ExecContext(
 		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne",
-		ulid.Make().String(), nil, openfgav1.TupleOperation_TUPLE_OPERATION_WRITE,
+		ulid.Make().String(), openfgav1.TupleOperation_TUPLE_OPERATION_WRITE,
 	)
 	require.NoError(t, err)
 
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
 	_, err = ds.primaryDB.ExecContext(
 		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne",
-		ulid.Make().String(), nil, openfgav1.TupleOperation_TUPLE_OPERATION_DELETE,
+		ulid.Make().String(), openfgav1.TupleOperation_TUPLE_OPERATION_DELETE,
 	)
 	require.NoError(t, err)
 
@@ -611,7 +591,7 @@ func TestMarshalledAssertions(t *testing.T) {
 	stmt := `
 		INSERT INTO assertion (
 			store, authorization_model_id, assertions
-		) VALUES (@p1, @p2, CONVERT(varbinary(max), '0a2b0a270a12666f6c6465723a323032312d62756467657412056f776e65721a0a757365723a616e6e657a1001', 2));
+		) VALUES (@p1, @p2, 0x0a2b0a270a12666f6c6465723a323032312d62756467657412056f776e65721a0a757365723a616e6e657a1001);
 	`
 	_, err = ds.primaryDB.ExecContext(ctx, stmt, "store", "model")
 	require.NoError(t, err)

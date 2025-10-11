@@ -899,7 +899,7 @@ func WriteAuthorizationModel(
 	_, err = dbInfo.stbl.
 		Insert("authorization_model").
 		Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
-		Values(store, model.GetId(), schemaVersion, "", nil, pbdata).
+		Values(store, model.GetId(), schemaVersion, "", sq.Expr("NULL"), pbdata).
 		ExecContext(ctx)
 	if err != nil {
 		return dbInfo.HandleSQLError(err)

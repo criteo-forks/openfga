@@ -557,29 +557,7 @@ func (s *Datastore) WriteAuthorizationModel(ctx context.Context, store string, m
 	ctx, span := startTrace(ctx, "WriteAuthorizationModel")
 	defer span.End()
 
-	// HACK: We can't realy on sqlcommon, since serialization should be handled manualy.
-	schemaVersion := model.GetSchemaVersion()
-	typeDefinitions := model.GetTypeDefinitions()
-
-	if len(typeDefinitions) < 1 {
-		return nil
-	}
-
-	pbdata, err := proto.Marshal(model)
-	if err != nil {
-		return err
-	}
-
-	_, err = s.primaryStbl.
-		Insert("authorization_model").
-		Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
-		Values(store, model.GetId(), schemaVersion, "", sq.Expr("NULL"), sq.Expr(fmt.Sprintf("0x%x", pbdata))).
-		ExecContext(ctx)
-	if err != nil {
-		return HandleSQLError(err)
-	}
-
-	return nil
+	return sqlcommon.WriteAuthorizationModel(ctx, s.primaryDBInfo, store, model)
 }
 
 // CreateStore adds a new store to storage.
