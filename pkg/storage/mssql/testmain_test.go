@@ -1,4 +1,4 @@
-package listusers
+package mssql
 
 import (
 	"os"
@@ -9,8 +9,6 @@ import (
 
 func TestMain(m *testing.M) {
 	code := m.Run()
-	storagefixtures.CleanupPostgresContainer()
 	storagefixtures.CleanupMSSQLContainer()
-	storagefixtures.CleanupMysqlContainer()
 	os.Exit(code)
 }

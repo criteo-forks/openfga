@@ -613,7 +613,9 @@ func (s *Datastore) write(
 	}
 
 	// 4. Construct the deleteConditions, write and changelog items to be written
-	deleteConditions, writeItems, changeLogItems, err := sqlcommon.GetDeleteWriteChangelogItems(store, existing,
+	deleteConditions, writeItems, changeLogItems, err := sqlcommon.GetDeleteWriteChangelogItems(
+		sq.Expr("NOW()"),
+		store, existing,
 		sqlcommon.WriteData{
 			Deletes: deletes,
 			Writes:  writes,

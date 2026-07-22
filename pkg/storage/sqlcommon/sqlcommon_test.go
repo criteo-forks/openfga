@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,6 +118,7 @@ func TestGetDeleteWriteChangelogItems_OperationIsInt32(t *testing.T) {
 
 		tk := tupleUtils.NewTupleKey("document:1", "viewer", "user:alice")
 		_, _, changeLogItems, err := GetDeleteWriteChangelogItems(
+			sq.Expr("NOW()"),
 			store,
 			map[string]*openfgav1.Tuple{}, // no pre-existing tuples
 			WriteData{
@@ -148,6 +150,7 @@ func TestGetDeleteWriteChangelogItems_OperationIsInt32(t *testing.T) {
 		}
 
 		_, _, changeLogItems, err := GetDeleteWriteChangelogItems(
+			sq.Expr("NOW()"),
 			store,
 			existing,
 			WriteData{
@@ -180,6 +183,7 @@ func TestGetDeleteWriteChangelogItems_OperationIsInt32(t *testing.T) {
 		}
 
 		_, _, changeLogItems, err := GetDeleteWriteChangelogItems(
+			sq.Expr("NOW()"),
 			store,
 			existing,
 			WriteData{
