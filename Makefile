@@ -85,7 +85,7 @@ lint: $(GO_BIN)/golangci-lint ## Lint Go source files
 .PHONY: test test-unit test-storage test-matrix test-docker test-bench generate-mocks
 
 # Package groups for parallel CI jobs
-STORAGE_PACKAGES := ./pkg/storage/sqlite/... ./pkg/storage/mysql/... ./pkg/storage/postgres/... ./pkg/storage/memory/... ./pkg/storage/migrate/...
+STORAGE_PACKAGES := ./pkg/storage/sqlite/... ./pkg/storage/mssql/... ./pkg/storage/mysql/... ./pkg/storage/postgres/... ./pkg/storage/memory/... ./pkg/storage/migrate/...
 MATRIX_PACKAGES := ./tests/... ./cmd/run/... ./cmd/validatemodels/...
 
 test: generate-mocks ## Run all tests. To run a specific test, pass the FILTER var. Usage `make test FILTER="TestCheckLogs"`
@@ -111,11 +111,11 @@ test-unit: generate-mocks ## Run unit tests (fast packages only)
 			-covermode=atomic \
 			-count=1 \
 			-timeout=10m \
-			$$(go list ./... | grep -vE '(pkg/storage/(sqlite|mysql|postgres|memory|migrate)|openfga/tests|cmd/run|cmd/validatemodels)')
+			$$(go list ./... | grep -vE '(pkg/storage/(sqlite|mssql|mysql|postgres|memory|migrate)|openfga/tests|cmd/run|cmd/validatemodels)')
 	@cat coverageunit.tmp.out | grep -v "mock" > coverageunit.out
 	@rm coverageunit.tmp.out
 
-test-storage: generate-mocks ## Run storage integration tests (sqlite, mysql, postgres, memory)
+test-storage: generate-mocks ## Run storage integration tests (sqlite, mssql, mysql, postgres, memory)
 	${call print, "Running storage integration tests"}
 	@go test -race \
 			-run "$(FILTER)" \
@@ -155,12 +155,20 @@ test-bench: generate-mocks ## Run benchmark tests. See https://pkg.go.dev/cmd/go
 #-----------------------------------------------------------------------------------------------------------------------
 .PHONY: dev-run
 
-dev-run: $(GO_BIN)/CompileDaemon $(GO_BIN)/openfga ## Run the OpenFGA server with hot reloading. Data storage type can be overridden using DATASTORE="mysql", available options are `in-memory`, `mysql`, `postgres`, `sqlite`, default is "in-memory". Usage `DATASTORE="mysql" make dev-run`
+dev-run: $(GO_BIN)/CompileDaemon $(GO_BIN)/openfga ## Run the OpenFGA server with hot reloading. Data storage type can be overridden using DATASTORE="mysql", available options are `in-memory`, `mssql`, `mysql`, `postgres`, `sqlite`, default is "in-memory". Usage `DATASTORE="mysql" make dev-run`
 	${call print, "Starting OpenFGA server"}
 	@case "${DATASTORE}" in \
 		"in-memory") \
 			echo "==> Running OpenFGA with In-Memory data storage"; \
 			CompileDaemon -graceful-kill -build='make install' -command='openfga run'; \
+			break; \
+			;; \
+		"mssql") \
+			echo "==> Running OpenFGA with MSSQL data storage"; \
+			docker run -d --name mssql -p 1433:1433 -e "ACCEPT_EULA=Y" -e "MSSQL_SA_PASSWORD=pKC8mMA_qu5SLeaG" mcr.microsoft.com/mssql/server:2022-latest > /dev/null 2>&1 || docker start mssql; \
+			sleep 2; \
+			openfga migrate --datastore-engine mssql --datastore-uri 'sqlserver://sa:pKC8mMA_qu5SLeaG@localhost:1433'; \
+			CompileDaemon -graceful-kill -build='make install' -command="openfga run --datastore-engine mssql --datastore-uri sqlserver://sa:pKC8mMA_qu5SLeaG@localhost:1433"; \
 			break; \
 			;; \
 		"mysql") \

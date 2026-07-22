@@ -4,6 +4,7 @@ package assets
 import "embed"
 
 const (
+	MSSQLMigrationDir    = "migrations/mssql"
 	MySQLMigrationDir    = "migrations/mysql"
 	PostgresMigrationDir = "migrations/postgres"
 	SqliteMigrationDir   = "migrations/sqlite"

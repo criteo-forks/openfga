@@ -575,19 +575,21 @@ func (t *SQLTupleIterator) IsOrdered() bool { return false }
 // DBInfo encapsulates DB information for use in common method.
 type DBInfo struct {
 	stbl           sq.StatementBuilderType
+	nowStbl        sq.Sqlizer
 	HandleSQLError errorHandlerFn
 }
 
 type errorHandlerFn func(error, ...interface{}) error
 
 // NewDBInfo constructs a [DBInfo] object.
-func NewDBInfo(stbl sq.StatementBuilderType, errorHandler errorHandlerFn, dialect string) *DBInfo {
+func NewDBInfo(stbl sq.StatementBuilderType, errorHandler errorHandlerFn, dialect string, nowSql string) *DBInfo {
 	if err := goose.SetDialect(dialect); err != nil {
 		panic("failed to set database dialect: " + err.Error())
 	}
 
 	return &DBInfo{
 		stbl:           stbl,
+		nowStbl:        sq.Expr(nowSql),
 		HandleSQLError: errorHandler,
 	}
 }
@@ -679,15 +681,24 @@ func BuildRowConstructorIN(keys []TupleLockKey) (string, []interface{}) {
 // selectExistingRowsForWrite selects existing rows for the given keys and locks them FOR UPDATE.
 // The existing rows are added to the existing map.
 func selectExistingRowsForWrite(ctx context.Context, dbInfo *DBInfo, store string, keys []TupleLockKey, txn *sql.Tx, existing map[string]*openfgav1.Tuple) error {
-	inExpr, args := BuildRowConstructorIN(keys)
+	selectionConditions := sq.Or{}
+
+	for _, k := range keys {
+		selectionConditions = append(selectionConditions, sq.Eq{
+			"object_type": k.objectType,
+			"object_id":   k.objectID,
+			"relation":    k.relation,
+			"_user":       k.user,
+			"user_type":   k.userType,
+		})
+	}
 
 	selectBuilder := dbInfo.stbl.
 		Select(SQLIteratorColumns()...).
 		From("tuple").
 		Where(sq.Eq{"store": store}).
 		// Row-constructor IN on full composite key for precise point locks.
-		Where(sq.Expr("(object_type, object_id, relation, _user, user_type) IN "+inExpr, args...)).
-		Suffix("FOR UPDATE").
+		Where(selectionConditions).
 		RunWith(txn) // make sure to run in the same transaction
 
 	iter := NewSQLTupleIterator(NewSBIteratorQuery(selectBuilder), dbInfo.HandleSQLError)
@@ -706,6 +717,7 @@ func selectExistingRowsForWrite(ctx context.Context, dbInfo *DBInfo, store strin
 
 // GetDeleteWriteChangelogItems constructs the delete conditions, write items, and changelog items.
 func GetDeleteWriteChangelogItems(
+	nowStbl sq.Sqlizer,
 	store string,
 	existing map[string]*openfgav1.Tuple,
 	writeData WriteData) (sq.Or, [][]interface{}, [][]interface{}, error) {
@@ -753,6 +765,7 @@ func GetDeleteWriteChangelogItems(
 			"user_type":   tupleUtils.GetUserTypeFromUser(tk.GetUser()),
 		})
 
+		var nilSlice []uint8
 		changeLogItems = append(changeLogItems, []interface{}{
 			store,
 			objectType,
@@ -760,10 +773,10 @@ func GetDeleteWriteChangelogItems(
 			tk.GetRelation(),
 			tk.GetUser(),
 			"",
-			nil, // Redact condition info for Deletes since we only need the base triplet (object, relation, user).
+			nilSlice, // Redact condition info for Deletes since we only need the base triplet (object, relation, user).
 			int32(openfgav1.TupleOperation_TUPLE_OPERATION_DELETE),
 			id,
-			sq.Expr("NOW()"),
+			nowStbl,
 		})
 	}
 
@@ -819,7 +832,7 @@ func GetDeleteWriteChangelogItems(
 			conditionName,
 			conditionContext,
 			id,
-			sq.Expr("NOW()"),
+			nowStbl,
 		})
 
 		changeLogItems = append(changeLogItems, []interface{}{
@@ -832,7 +845,7 @@ func GetDeleteWriteChangelogItems(
 			conditionContext,
 			int32(openfgav1.TupleOperation_TUPLE_OPERATION_WRITE),
 			id,
-			sq.Expr("NOW()"),
+			nowStbl,
 		})
 	}
 	return deleteConditions, writeItems, changeLogItems, nil
@@ -886,7 +899,7 @@ func Write(
 	}
 
 	// 4. Construct the deleteConditions, write and changelog items to be written
-	deleteConditions, writeItems, changeLogItems, err := GetDeleteWriteChangelogItems(store, existing, writeData)
+	deleteConditions, writeItems, changeLogItems, err := GetDeleteWriteChangelogItems(dbInfo.nowStbl, store, existing, writeData)
 	if err != nil {
 		return err
 	}
@@ -1022,7 +1035,7 @@ func WriteAuthorizationModel(
 	_, err = dbInfo.stbl.
 		Insert("authorization_model").
 		Columns("store", "authorization_model_id", "schema_version", "type", "type_definition", "serialized_protobuf").
-		Values(store, model.GetId(), schemaVersion, "", nil, pbdata).
+		Values(store, model.GetId(), schemaVersion, "", sq.Expr("NULL"), pbdata).
 		ExecContext(ctx)
 	if err != nil {
 		return dbInfo.HandleSQLError(err)

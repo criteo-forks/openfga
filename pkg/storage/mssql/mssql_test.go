@@ -1,15 +1,14 @@
-package mysql
+package mssql
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
-	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/oklog/ulid/v2"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
@@ -21,19 +20,19 @@ import (
 	"github.com/openfga/openfga/pkg/storage/test"
 	storagefixtures "github.com/openfga/openfga/pkg/testfixtures/storage"
 	"github.com/openfga/openfga/pkg/testutils"
+	"github.com/openfga/openfga/pkg/tuple"
 	tupleUtils "github.com/openfga/openfga/pkg/tuple"
 	"github.com/openfga/openfga/pkg/typesystem"
 )
 
-func TestMySQLDatastore(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+func TestMSSQLDatastore(t *testing.T) {
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
 	ds, err := New(uri, cfg)
 	require.NoError(t, err)
 	defer ds.Close()
-
 	test.RunAllTests(t, ds)
 
 	// Run tests with a custom large max_tuples_per_write value.
@@ -46,8 +45,47 @@ func TestMySQLDatastore(t *testing.T) {
 	t.Run("WriteTuplesWithMaxTuplesPerWrite", test.WriteTuplesWithMaxTuplesPerWrite(dsCustom, context.Background()))
 }
 
-func TestMySQLDatastoreAfterCloseIsNotReady(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+func TestMSSQLDatastoreStartup(t *testing.T) {
+	primaryDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
+	primaryURI := primaryDatastore.GetConnectionURI(true)
+
+	cfg := sqlcommon.NewConfig()
+	cfg.ExportMetrics = true
+
+	ds, err := New(primaryURI, cfg)
+	require.NoError(t, err)
+	defer ds.Close()
+
+	status, err := ds.IsReady(context.Background())
+	require.NoError(t, err)
+	require.True(t, status.IsReady)
+}
+
+func TestMSSQLDatastoreStatusWithSecondaryDB(t *testing.T) {
+	t.Skip("Skipping test because this feature is not supported yet.")
+
+	primaryDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
+	err := primaryDatastore.CreateSecondary(t)
+	require.NoError(t, err)
+
+	primaryURI := primaryDatastore.GetConnectionURI(true)
+
+	cfg := sqlcommon.NewConfig()
+	cfg.SecondaryURI = primaryDatastore.GetSecondaryConnectionURI(true)
+	cfg.ExportMetrics = true
+
+	ds, err := New(primaryURI, cfg)
+	require.NoError(t, err)
+	defer ds.Close()
+
+	status, err := ds.IsReady(context.Background())
+	require.NoError(t, err)
+	require.True(t, status.IsReady)
+	require.Equal(t, "primary: ready, secondary: ready", status.Message)
+}
+
+func TestMSSQLDatastoreAfterCloseIsNotReady(t *testing.T) {
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -57,6 +95,45 @@ func TestMySQLDatastoreAfterCloseIsNotReady(t *testing.T) {
 	status, err := ds.IsReady(context.Background())
 	require.Error(t, err)
 	require.False(t, status.IsReady)
+}
+
+// mostly test various error scenarios.
+func TestNewDB(t *testing.T) {
+	t.Run("bad_uri", func(t *testing.T) {
+		t.Skip("`bad_uri` is not considered as a bad uri format in the mssql driver, so this test is skipped.")
+
+		uri := "bad_uri"
+		_, err := New(uri, &sqlcommon.Config{})
+		require.Error(t, err)
+	})
+	t.Run("bad_secondary_uri", func(t *testing.T) {
+		t.Skip("`bad_uri` is not considered as a bad uri format in the mssql driver, so this test is skipped.")
+
+		primaryDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
+		primaryURI := primaryDatastore.GetConnectionURI(true)
+		_, err := New(primaryURI, &sqlcommon.Config{
+			SecondaryURI: "bad_uri",
+			Logger:       logger.NewNoopLogger(),
+		})
+		require.Error(t, err)
+	})
+	t.Run("cannot_ping_primary_uri", func(t *testing.T) {
+		uri := "sqlserver://abc:passwd@localhost:1433/dbinstance"
+		cfg := sqlcommon.Config{
+			Username:                "override_user",
+			Password:                "override_passwd",
+			MinIdleConns:            10,
+			MaxOpenConns:            50,
+			MinOpenConns:            15,
+			ConnMaxLifetime:         time.Minute * 20,
+			ConnMaxIdleTime:         1 * time.Minute,
+			Logger:                  logger.NewNoopLogger(),
+			PingTimeout:             100 * time.Millisecond,
+			PingRetryMaxElapsedTime: 2 * time.Second,
+		}
+		_, err := New(uri, &cfg)
+		require.Error(t, err)
+	})
 }
 
 // TestReadEnsureNoOrder asserts that the read response is not ordered by ulid.
@@ -76,7 +153,7 @@ func TestReadEnsureNoOrder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+			testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 			uri := testDatastore.GetConnectionURI(true)
 			cfg := sqlcommon.NewConfig()
@@ -85,14 +162,15 @@ func TestReadEnsureNoOrder(t *testing.T) {
 			defer ds.Close()
 
 			ctx := context.Background()
+
 			store := "store"
-			firstTuple := tupleUtils.NewTupleKey("doc:object_id_1", "relation", "user:user_1")
-			secondTuple := tupleUtils.NewTupleKey("doc:object_id_2", "relation", "user:user_2")
-			thirdTuple := tupleUtils.NewTupleKey("doc:object_id_3", "relation", "user:user_3")
+			firstTuple := tuple.NewTupleKey("doc:object_id_1", "relation", "user:user_1")
+			secondTuple := tuple.NewTupleKey("doc:object_id_2", "relation", "user:user_2")
+			thirdTuple := tuple.NewTupleKey("doc:object_id_3", "relation", "user:user_3")
 
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.stbl, HandleSQLError, "mysql", "NOW()"),
-				ds.db,
+				sqlcommon.NewDBInfo(ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
+				ds.primaryDB,
 				store,
 				sqlcommon.WriteData{
 					Deletes: []*openfgav1.TupleKeyWithoutCondition{},
@@ -104,8 +182,8 @@ func TestReadEnsureNoOrder(t *testing.T) {
 
 			// Tweak time so that ULID is smaller.
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.stbl, HandleSQLError, "mysql", "NOW()"),
-				ds.db,
+				sqlcommon.NewDBInfo(ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
+				ds.primaryDB,
 				store,
 				sqlcommon.WriteData{
 					Deletes: []*openfgav1.TupleKeyWithoutCondition{},
@@ -115,10 +193,9 @@ func TestReadEnsureNoOrder(t *testing.T) {
 				})
 			require.NoError(t, err)
 
-			// Tweak time so that ULID is smaller.
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.stbl, HandleSQLError, "mysql", "NOW()"),
-				ds.db,
+				sqlcommon.NewDBInfo(ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
+				ds.primaryDB,
 				store,
 				sqlcommon.WriteData{
 					Deletes: []*openfgav1.TupleKeyWithoutCondition{},
@@ -130,7 +207,6 @@ func TestReadEnsureNoOrder(t *testing.T) {
 
 			iter, err := ds.Read(ctx, store, storage.ReadFilter{Object: "doc:", Relation: "relation", User: ""}, storage.ReadOptions{})
 			defer iter.Stop()
-
 			require.NoError(t, err)
 
 			// We expect that objectID1 will return first because it is inserted first.
@@ -139,7 +215,7 @@ func TestReadEnsureNoOrder(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, firstTuple, curTuple.GetKey())
 
-				// calling head should not change the order
+				// calling head should not move the item
 				curTuple, err = iter.Head(ctx)
 				require.NoError(t, err)
 				require.Equal(t, firstTuple, curTuple.GetKey())
@@ -190,7 +266,7 @@ func TestCtxCancel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+			testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 			uri := testDatastore.GetConnectionURI(true)
 			cfg := sqlcommon.NewConfig()
@@ -201,13 +277,13 @@ func TestCtxCancel(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 
 			store := "store"
-			firstTuple := tupleUtils.NewTupleKey("doc:object_id_1", "relation", "user:user_1")
-			secondTuple := tupleUtils.NewTupleKey("doc:object_id_2", "relation", "user:user_2")
-			thirdTuple := tupleUtils.NewTupleKey("doc:object_id_3", "relation", "user:user_3")
+			firstTuple := tuple.NewTupleKey("doc:object_id_1", "relation", "user:user_1")
+			secondTuple := tuple.NewTupleKey("doc:object_id_2", "relation", "user:user_2")
+			thirdTuple := tuple.NewTupleKey("doc:object_id_3", "relation", "user:user_3")
 
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.stbl, HandleSQLError, "mysql", "NOW()"),
-				ds.db,
+				sqlcommon.NewDBInfo(ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
+				ds.primaryDB,
 				store,
 				sqlcommon.WriteData{
 					Deletes: []*openfgav1.TupleKeyWithoutCondition{},
@@ -219,8 +295,8 @@ func TestCtxCancel(t *testing.T) {
 
 			// Tweak time so that ULID is smaller.
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.stbl, HandleSQLError, "mysql", "NOW()"),
-				ds.db,
+				sqlcommon.NewDBInfo(ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
+				ds.primaryDB,
 				store,
 				sqlcommon.WriteData{
 					Deletes: []*openfgav1.TupleKeyWithoutCondition{},
@@ -230,10 +306,9 @@ func TestCtxCancel(t *testing.T) {
 				})
 			require.NoError(t, err)
 
-			// Tweak time so that ULID is smaller.
 			err = sqlcommon.Write(ctx,
-				sqlcommon.NewDBInfo(ds.stbl, HandleSQLError, "mysql", "NOW()"),
-				ds.db,
+				sqlcommon.NewDBInfo(ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
+				ds.primaryDB,
 				store,
 				sqlcommon.WriteData{
 					Deletes: []*openfgav1.TupleKeyWithoutCondition{},
@@ -248,7 +323,6 @@ func TestCtxCancel(t *testing.T) {
 			require.NoError(t, err)
 
 			cancel()
-
 			if tt.mixed {
 				_, err = iter.Head(ctx)
 				require.Error(t, err)
@@ -262,9 +336,9 @@ func TestCtxCancel(t *testing.T) {
 	}
 }
 
-// TestReadPageEnsureOrder asserts that the read page is ordered by ulid.
+// TestReadPageEnsureNoOrder asserts that the read page is ordered by ulid.
 func TestReadPageEnsureOrder(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -275,12 +349,12 @@ func TestReadPageEnsureOrder(t *testing.T) {
 	ctx := context.Background()
 
 	store := "store"
-	firstTuple := tupleUtils.NewTupleKey("doc:object_id_1", "relation", "user:user_1")
-	secondTuple := tupleUtils.NewTupleKey("doc:object_id_2", "relation", "user:user_2")
+	firstTuple := tuple.NewTupleKey("doc:object_id_1", "relation", "user:user_1")
+	secondTuple := tuple.NewTupleKey("doc:object_id_2", "relation", "user:user_2")
 
 	err = sqlcommon.Write(ctx,
-		sqlcommon.NewDBInfo(ds.stbl, HandleSQLError, "mysql", "NOW()"),
-		ds.db,
+		sqlcommon.NewDBInfo(ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
+		ds.primaryDB,
 		store,
 		sqlcommon.WriteData{
 			Deletes: []*openfgav1.TupleKeyWithoutCondition{},
@@ -292,8 +366,8 @@ func TestReadPageEnsureOrder(t *testing.T) {
 
 	// Tweak time so that ULID is smaller.
 	err = sqlcommon.Write(ctx,
-		sqlcommon.NewDBInfo(ds.stbl, HandleSQLError, "mysql", "NOW()"),
-		ds.db,
+		sqlcommon.NewDBInfo(ds.primaryStbl, HandleSQLError, "mssql", "SYSUTCDATETIME()"),
+		ds.primaryDB,
 		store,
 		sqlcommon.WriteData{
 			Deletes: []*openfgav1.TupleKeyWithoutCondition{},
@@ -317,8 +391,8 @@ func TestReadPageEnsureOrder(t *testing.T) {
 	require.Equal(t, firstTuple, tuples[1].GetKey())
 }
 
-func TestMySQLDatastore_ReadPageWithUserFiltering(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+func TestMSSQLDatastore_ReadPageWithUserFiltering(t *testing.T) {
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -382,7 +456,7 @@ func TestMySQLDatastore_ReadPageWithUserFiltering(t *testing.T) {
 }
 
 func TestReadAuthorizationModelUnmarshallError(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -399,7 +473,7 @@ func TestReadAuthorizationModelUnmarshallError(t *testing.T) {
 	require.NoError(t, err)
 	pbdata := []byte{0x01, 0x02, 0x03}
 
-	_, err = ds.db.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (?, ?, ?, ?, ?, ?)", store, modelID, schemaVersion, "document", bytes, pbdata)
+	_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, @p6)", store, modelID, schemaVersion, "document", bytes, pbdata)
 	require.NoError(t, err)
 
 	_, err = ds.ReadAuthorizationModel(ctx, store, modelID)
@@ -408,7 +482,7 @@ func TestReadAuthorizationModelUnmarshallError(t *testing.T) {
 }
 
 func TestReadAuthorizationModelReturnValue(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -424,11 +498,12 @@ func TestReadAuthorizationModelReturnValue(t *testing.T) {
 	bytes, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "document"})
 	require.NoError(t, err)
 
-	_, err = ds.db.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (?, ?, ?, ?, ?, ?)", store, modelID, schemaVersion, "document", bytes, nil)
-
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+	_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, NULL)", store, modelID, schemaVersion, "document", bytes)
 	require.NoError(t, err)
 
 	res, err := ds.ReadAuthorizationModel(ctx, store, modelID)
+
 	require.NoError(t, err)
 	// AuthorizationModel should return only 1 type which is of type "document"
 	require.Len(t, res.GetTypeDefinitions(), 1)
@@ -436,7 +511,7 @@ func TestReadAuthorizationModelReturnValue(t *testing.T) {
 }
 
 func TestFindLatestModel(t *testing.T) {
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -465,15 +540,17 @@ func TestFindLatestModel(t *testing.T) {
 		// write type "document"
 		bytesDocumentType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "document"})
 		require.NoError(t, err)
-		_, err = ds.db.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (?, ?, ?, ?, ?, ?)",
-			store, modelID, schemaVersion, "document", bytesDocumentType, nil)
+
+		// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, NULL)", store, modelID, schemaVersion, "document", bytesDocumentType)
 		require.NoError(t, err)
 
 		// write type "user"
 		bytesUserType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "user"})
 		require.NoError(t, err)
-		_, err = ds.db.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (?, ?, ?, ?, ?, ?)",
-			store, modelID, schemaVersion, "user", bytesUserType, nil)
+
+		// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, NULL)", store, modelID, schemaVersion, "user", bytesUserType)
 		require.NoError(t, err)
 
 		latestModel, err = ds.FindLatestAuthorizationModel(ctx, store)
@@ -486,15 +563,17 @@ func TestFindLatestModel(t *testing.T) {
 		// write type "document"
 		bytesDocumentType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "document"})
 		require.NoError(t, err)
-		_, err = ds.db.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (?, ?, ?, ?, ?, ?)",
-			store, modelID, schemaVersion, "document", bytesDocumentType, nil)
+
+		// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, NULL)", store, modelID, schemaVersion, "document", bytesDocumentType)
 		require.NoError(t, err)
 
 		// write type "user"
 		bytesUserType, err := proto.Marshal(&openfgav1.TypeDefinition{Type: "user"})
 		require.NoError(t, err)
-		_, err = ds.db.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (?, ?, ?, ?, ?, ?)",
-			store, modelID, schemaVersion, "user", bytesUserType, nil)
+
+		// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+		_, err = ds.primaryDB.ExecContext(ctx, "INSERT INTO authorization_model (store, authorization_model_id, schema_version, type, type_definition, serialized_protobuf) VALUES (@p1, @p2, @p3, @p4, @p5, NULL)", store, modelID, schemaVersion, "user", bytesUserType)
 		require.NoError(t, err)
 
 		latestModel, err := ds.FindLatestAuthorizationModel(ctx, store)
@@ -514,184 +593,9 @@ func TestFindLatestModel(t *testing.T) {
 	})
 }
 
-// TestAllowNullCondition tests that tuple and changelog rows existing before
-// migration 005_add_conditions_to_tuples can be successfully read.
-func TestAllowNullCondition(t *testing.T) {
-	ctx := context.Background()
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
-
-	uri := testDatastore.GetConnectionURI(true)
-	cfg := sqlcommon.NewConfig()
-	ds, err := New(uri, cfg)
-	require.NoError(t, err)
-	defer ds.Close()
-
-	stmt := `
-		INSERT INTO tuple (
-			store, object_type, object_id, relation, _user, user_type, ulid,
-			condition_name, condition_context, inserted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW());
-	`
-	_, err = ds.db.ExecContext(
-		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne", "user",
-		ulid.Make().String(), nil, nil,
-	)
-	require.NoError(t, err)
-
-	tk := tupleUtils.NewTupleKey("folder:2021-budget", "owner", "user:anne")
-	filter := storage.ReadFilter{
-		Object:   "folder:2021-budget",
-		Relation: "owner",
-		User:     "user:anne",
-	}
-	iter, err := ds.Read(ctx, "store", filter, storage.ReadOptions{})
-	require.NoError(t, err)
-	defer iter.Stop()
-
-	curTuple, err := iter.Next(ctx)
-	require.NoError(t, err)
-	require.Equal(t, tk, curTuple.GetKey())
-
-	opts := storage.ReadPageOptions{
-		Pagination: storage.NewPaginationOptions(2, ""),
-	}
-	tuples, _, err := ds.ReadPage(ctx, "store", storage.ReadFilter{}, opts)
-	require.NoError(t, err)
-	require.Len(t, tuples, 1)
-	require.Equal(t, tk, tuples[0].GetKey())
-
-	userTuple, err := ds.ReadUserTuple(ctx, "store", filter, storage.ReadUserTupleOptions{})
-	require.NoError(t, err)
-	require.Equal(t, tk, userTuple.GetKey())
-
-	tk2 := tupleUtils.NewTupleKey("folder:2022-budget", "viewer", "user:anne")
-	_, err = ds.db.ExecContext(
-		ctx, stmt, "store", "folder", "2022-budget", "viewer", "user:anne", "userset",
-		ulid.Make().String(), nil, nil,
-	)
-
-	require.NoError(t, err)
-	iter, err = ds.ReadUsersetTuples(ctx, "store", storage.ReadUsersetTuplesFilter{Object: "folder:2022-budget"}, storage.ReadUsersetTuplesOptions{})
-	require.NoError(t, err)
-	defer iter.Stop()
-
-	curTuple, err = iter.Next(ctx)
-	require.NoError(t, err)
-	require.Equal(t, tk2, curTuple.GetKey())
-
-	iter, err = ds.ReadStartingWithUser(ctx, "store", storage.ReadStartingWithUserFilter{
-		ObjectType: "folder",
-		Relation:   "owner",
-		UserFilter: []*openfgav1.ObjectRelation{
-			{Object: "user:anne"},
-		},
-	}, storage.ReadStartingWithUserOptions{})
-	require.NoError(t, err)
-	defer iter.Stop()
-
-	curTuple, err = iter.Next(ctx)
-	require.NoError(t, err)
-	require.Equal(t, tk, curTuple.GetKey())
-
-	stmt = `
-	INSERT INTO changelog (
-		store, object_type, object_id, relation, _user, ulid,
-		condition_name, condition_context, inserted_at, operation
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?);
-`
-	_, err = ds.db.ExecContext(
-		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne",
-		ulid.Make().String(), nil, nil, openfgav1.TupleOperation_TUPLE_OPERATION_WRITE,
-	)
-	require.NoError(t, err)
-
-	_, err = ds.db.ExecContext(
-		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne",
-		ulid.Make().String(), nil, nil, openfgav1.TupleOperation_TUPLE_OPERATION_DELETE,
-	)
-	require.NoError(t, err)
-
-	readChangesOpts := storage.ReadChangesOptions{
-		Pagination: storage.NewPaginationOptions(storage.DefaultPageSize, ""),
-	}
-	changes, _, err := ds.ReadChanges(ctx, "store", storage.ReadChangesFilter{ObjectType: "folder"}, readChangesOpts)
-	require.NoError(t, err)
-	require.Len(t, changes, 2)
-	require.Equal(t, tk, changes[0].GetTupleKey())
-	require.Equal(t, tk, changes[1].GetTupleKey())
-}
-
-// TestMarshalledAssertions tests that previously persisted marshalled
-// assertions can be read back. In any case where the Assertions proto model
-// needs to change, we'll likely need to introduce a series of data migrations.
-func TestMarshalledAssertions(t *testing.T) {
-	ctx := context.Background()
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
-
-	uri := testDatastore.GetConnectionURI(true)
-	cfg := sqlcommon.NewConfig()
-	ds, err := New(uri, cfg)
-	require.NoError(t, err)
-	defer ds.Close()
-
-	// Note: this represents an assertion written on v1.3.7.
-	stmt := `
-		INSERT INTO assertion (
-			store, authorization_model_id, assertions
-		) VALUES (?, ?, UNHEX('0A2B0A270A12666F6C6465723A323032312D62756467657412056F776E65721A0A757365723A616E6E657A1001'));
-	`
-	_, err = ds.db.ExecContext(ctx, stmt, "store", "model")
-	require.NoError(t, err)
-
-	assertions, err := ds.ReadAssertions(ctx, "store", "model")
-	require.NoError(t, err)
-
-	expectedAssertions := []*openfgav1.Assertion{
-		{
-			TupleKey: &openfgav1.AssertionTupleKey{
-				Object:   "folder:2021-budget",
-				Relation: "owner",
-				User:     "user:annez",
-			},
-			Expectation: true,
-		},
-	}
-	require.Equal(t, expectedAssertions, assertions)
-}
-
-func TestHandleSQLError(t *testing.T) {
-	t.Run("duplicate_entry_value_error_with_tuple_key_wraps_ErrInvalidWriteInput", func(t *testing.T) {
-		duplicateKeyError := &mysqldriver.MySQLError{
-			Number:  1062,
-			Message: "Duplicate entry '' for key ''",
-		}
-		err := HandleSQLError(duplicateKeyError, &openfgav1.TupleKey{
-			Object:   "object",
-			Relation: "relation",
-			User:     "user",
-		})
-		require.ErrorIs(t, err, storage.ErrInvalidWriteInput)
-	})
-
-	t.Run("duplicate_entry_value_error_without_tuple_key_returns_collision", func(t *testing.T) {
-		duplicateKeyError := &mysqldriver.MySQLError{
-			Number:  1062,
-			Message: "Duplicate entry '' for key ''",
-		}
-		err := HandleSQLError(duplicateKeyError)
-
-		require.ErrorIs(t, err, storage.ErrCollision)
-	})
-
-	t.Run("sql.ErrNoRows_is_converted_to_storage.ErrNotFound_error", func(t *testing.T) {
-		err := HandleSQLError(sql.ErrNoRows)
-		require.ErrorIs(t, err, storage.ErrNotFound)
-	})
-}
-
 func TestReadFilterWithConditions(t *testing.T) {
 	ctx := context.Background()
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -703,17 +607,18 @@ func TestReadFilterWithConditions(t *testing.T) {
 		INSERT INTO tuple (
 			store, object_type, object_id, relation, _user, user_type, ulid,
 			condition_name, condition_context, inserted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW());
+		) VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, NULL, SYSUTCDATETIME());
 	`
-	_, err = ds.db.ExecContext(
+
+	_, err = ds.primaryDB.ExecContext(
 		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne", "user",
-		ulid.Make().String(), "cond1", nil,
+		ulid.Make().String(), "cond1",
 	)
 	require.NoError(t, err)
 
-	_, err = ds.db.ExecContext(
+	_, err = ds.primaryDB.ExecContext(
 		ctx, stmt, "store", "folder", "2022-budget", "owner", "user:anne", "user",
-		ulid.Make().String(), nil, nil,
+		ulid.Make().String(), nil,
 	)
 	require.NoError(t, err)
 
@@ -725,7 +630,10 @@ func TestReadFilterWithConditions(t *testing.T) {
 	defer iter.Stop()
 	curTuple, err := iter.Next(ctx)
 	require.NoError(t, err)
-	require.Equal(t, tk, curTuple.GetKey())
+	require.Equal(t, tk.GetUser(), curTuple.GetKey().GetUser())
+	require.Equal(t, tk.GetObject(), curTuple.GetKey().GetObject())
+	require.Equal(t, tk.GetRelation(), curTuple.GetKey().GetRelation())
+	require.Equal(t, tk.GetCondition().String(), curTuple.GetKey().GetCondition().String())
 	_, err = iter.Next(ctx)
 	require.Error(t, err)
 
@@ -765,14 +673,17 @@ func TestReadFilterWithConditions(t *testing.T) {
 	defer iter.Stop()
 	curTuple, err = iter.Next(ctx)
 	require.NoError(t, err)
-	require.Equal(t, tk, curTuple.GetKey())
+	require.Equal(t, tk.GetUser(), curTuple.GetKey().GetUser())
+	require.Equal(t, tk.GetObject(), curTuple.GetKey().GetObject())
+	require.Equal(t, tk.GetRelation(), curTuple.GetKey().GetRelation())
+	require.Equal(t, tk.GetCondition().String(), curTuple.GetKey().GetCondition().String())
 	_, err = iter.Next(ctx)
 	require.Error(t, err)
 }
 
 func TestReadUserTupleFilterWithConditions(t *testing.T) {
 	ctx := context.Background()
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -780,25 +691,12 @@ func TestReadUserTupleFilterWithConditions(t *testing.T) {
 	require.NoError(t, err)
 	defer ds.Close()
 
-	stmt := `
-  INSERT INTO tuple (
-   store, object_type, object_id, relation, _user, user_type, ulid,
-   condition_name, condition_context, inserted_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW());
- `
-
 	// Insert tuple with condition
-	_, err = ds.db.ExecContext(
-		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne", "user",
-		ulid.Make().String(), "cond1", nil,
-	)
-	require.NoError(t, err)
-
-	// Insert tuple without condition
-	_, err = ds.db.ExecContext(
-		ctx, stmt, "store", "folder", "2022-budget", "owner", "user:anne", "user",
-		ulid.Make().String(), nil, nil,
-	)
+	tuples := []*openfgav1.TupleKey{
+		{Object: "folder:2021-budget", Relation: "owner", User: "user:anne", Condition: &openfgav1.RelationshipCondition{Name: "cond1"}},
+		{Object: "folder:2022-budget", Relation: "owner", User: "user:anne"},
+	}
+	err = ds.Write(ctx, "store", nil, tuples)
 	require.NoError(t, err)
 
 	// ReadUserTuple: if the tuple has condition and the filter has the same condition, the tuple should be returned
@@ -861,7 +759,7 @@ func TestReadUserTupleFilterWithConditions(t *testing.T) {
 
 func TestReadStartingWithUserFilterWithConditions(t *testing.T) {
 	ctx := context.Background()
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -980,7 +878,7 @@ func TestReadStartingWithUserFilterWithConditions(t *testing.T) {
 
 func TestReadUsersetTuplesFilterWithConditions(t *testing.T) {
 	ctx := context.Background()
-	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mysql")
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
 
 	uri := testDatastore.GetConnectionURI(true)
 	cfg := sqlcommon.NewConfig()
@@ -1109,41 +1007,171 @@ func TestReadUsersetTuplesFilterWithConditions(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestNew(t *testing.T) {
-	type args struct {
-		uri string
-		cfg *sqlcommon.Config
+// TestAllowNullCondition tests that tuple and changelog rows existing before
+// migration 005_add_conditions_to_tuples can be successfully read.
+func TestAllowNullCondition(t *testing.T) {
+	ctx := context.Background()
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
+
+	uri := testDatastore.GetConnectionURI(true)
+	cfg := sqlcommon.NewConfig()
+	ds, err := New(uri, cfg)
+	require.NoError(t, err)
+	defer ds.Close()
+
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+	stmt := `
+		INSERT INTO tuple (
+			store, object_type, object_id, relation, _user, user_type, ulid,
+			condition_name, condition_context, inserted_at
+		) VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7, NULL, NULL, SYSUTCDATETIME());
+	`
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+	_, err = ds.primaryDB.ExecContext(
+		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne", "user",
+		ulid.Make().String(),
+	)
+	require.NoError(t, err)
+
+	tk := tuple.NewTupleKey("folder:2021-budget", "owner", "user:anne")
+	filter := storage.ReadFilter{Object: "folder:2021-budget", Relation: "owner", User: "user:anne"}
+	iter, err := ds.Read(ctx, "store", filter, storage.ReadOptions{})
+	require.NoError(t, err)
+	defer iter.Stop()
+
+	curTuple, err := iter.Next(ctx)
+	require.NoError(t, err)
+	require.Equal(t, tk, curTuple.GetKey())
+
+	opts := storage.ReadPageOptions{
+		Pagination: storage.NewPaginationOptions(2, ""),
 	}
-	tests := []struct {
-		name    string
-		args    args
-		want    *Datastore
-		wantErr bool
-	}{
+	tuples, _, err := ds.ReadPage(ctx, "store", storage.ReadFilter{}, opts)
+	require.NoError(t, err)
+	require.Len(t, tuples, 1)
+	require.Equal(t, tk, tuples[0].GetKey())
+
+	userTuple, err := ds.ReadUserTuple(ctx, "store", filter, storage.ReadUserTupleOptions{})
+	require.NoError(t, err)
+	require.Equal(t, tk, userTuple.GetKey())
+
+	tk2 := tuple.NewTupleKey("folder:2022-budget", "viewer", "user:anne")
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+	_, err = ds.primaryDB.ExecContext(
+		ctx, stmt, "store", "folder", "2022-budget", "viewer", "user:anne", "userset",
+		ulid.Make().String(),
+	)
+
+	require.NoError(t, err)
+	iter, err = ds.ReadUsersetTuples(ctx, "store", storage.ReadUsersetTuplesFilter{Object: "folder:2022-budget"}, storage.ReadUsersetTuplesOptions{})
+	require.NoError(t, err)
+	defer iter.Stop()
+
+	curTuple, err = iter.Next(ctx)
+	require.NoError(t, err)
+	require.Equal(t, tk2, curTuple.GetKey())
+
+	iter, err = ds.ReadStartingWithUser(ctx, "store", storage.ReadStartingWithUserFilter{
+		ObjectType: "folder",
+		Relation:   "owner",
+		UserFilter: []*openfgav1.ObjectRelation{
+			{Object: "user:anne"},
+		},
+	}, storage.ReadStartingWithUserOptions{})
+	require.NoError(t, err)
+	defer iter.Stop()
+
+	curTuple, err = iter.Next(ctx)
+	require.NoError(t, err)
+	require.Equal(t, tk, curTuple.GetKey())
+
+	stmt = `
+	INSERT INTO changelog (
+		store, object_type, object_id, relation, _user, ulid,
+		condition_name, condition_context, inserted_at, operation
+	) VALUES (@p1, @p2, @p3, @p4, @p5, @p6, NULL, NULL, SYSUTCDATETIME(), @p7);
+`
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+	_, err = ds.primaryDB.ExecContext(
+		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne",
+		ulid.Make().String(), openfgav1.TupleOperation_TUPLE_OPERATION_WRITE,
+	)
+	require.NoError(t, err)
+
+	// HACK: Map nil to NULL to avoid converting nvarchar to varbinary(max)
+	_, err = ds.primaryDB.ExecContext(
+		ctx, stmt, "store", "folder", "2021-budget", "owner", "user:anne",
+		ulid.Make().String(), openfgav1.TupleOperation_TUPLE_OPERATION_DELETE,
+	)
+	require.NoError(t, err)
+
+	readChangesOpts := storage.ReadChangesOptions{
+		Pagination: storage.NewPaginationOptions(storage.DefaultPageSize, ""),
+	}
+	changes, _, err := ds.ReadChanges(ctx, "store", storage.ReadChangesFilter{ObjectType: "folder"}, readChangesOpts)
+	require.NoError(t, err)
+	require.Len(t, changes, 2)
+	require.Equal(t, tk, changes[0].GetTupleKey())
+	require.Equal(t, tk, changes[1].GetTupleKey())
+}
+
+// TestMarshalledAssertions tests that previously persisted marshalled
+// assertions can be read back. In any case where the Assertions proto model
+// needs to change, we'll likely need to introduce a series of data migrations.
+func TestMarshalledAssertions(t *testing.T) {
+	ctx := context.Background()
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "mssql")
+
+	uri := testDatastore.GetConnectionURI(true)
+	cfg := sqlcommon.NewConfig()
+	ds, err := New(uri, cfg)
+	require.NoError(t, err)
+	defer ds.Close()
+
+	// Note: this represents an assertion written on v1.3.7.
+	// HACK: Convert DECODE since it's not supported in MSSQL syntax
+	stmt := `
+		INSERT INTO assertion (
+			store, authorization_model_id, assertions
+		) VALUES (@p1, @p2, 0x0a2b0a270a12666f6c6465723a323032312d62756467657412056f776e65721a0a757365723a616e6e657a1001);
+	`
+	_, err = ds.primaryDB.ExecContext(ctx, stmt, "store", "model")
+	require.NoError(t, err)
+
+	assertions, err := ds.ReadAssertions(ctx, "store", "model")
+	require.NoError(t, err)
+
+	expectedAssertions := []*openfgav1.Assertion{
 		{
-			name: "bad_uri",
-			args: args{
-				uri: "my;uri?bad=true",
-				cfg: &sqlcommon.Config{
-					Logger: logger.NewNoopLogger(),
-				},
+			TupleKey: &openfgav1.AssertionTupleKey{
+				Object:   "folder:2021-budget",
+				Relation: "owner",
+				User:     "user:annez",
 			},
-			want:    nil,
-			wantErr: true,
+			Expectation: true,
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := sqlcommon.NewConfig()
-			got, err := New(tt.args.uri, cfg)
-			if got != nil {
-				defer got.Close()
-			}
-			if (err != nil) != tt.wantErr {
-				t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			assert.Equal(t, tt.want, got)
+	require.Equal(t, expectedAssertions, assertions)
+}
+
+func TestHandleSQLError(t *testing.T) {
+	t.Run("duplicate_key_value_error_with_tuple_key_wraps_ErrInvalidWriteInput", func(t *testing.T) {
+		err := HandleSQLError(errors.New("duplicate key value"), &openfgav1.TupleKey{
+			Object:   "object",
+			Relation: "relation",
+			User:     "user",
 		})
-	}
+		require.ErrorIs(t, err, storage.ErrInvalidWriteInput)
+	})
+
+	t.Run("duplicate_key_value_error_without_tuple_key_returns_collision", func(t *testing.T) {
+		duplicateKeyError := errors.New("duplicate key value")
+		err := HandleSQLError(duplicateKeyError)
+		require.ErrorIs(t, err, storage.ErrCollision)
+	})
+
+	t.Run("sql.ErrNoRows_is_converted_to_storage.ErrNotFound_error", func(t *testing.T) {
+		err := HandleSQLError(sql.ErrNoRows)
+		require.ErrorIs(t, err, storage.ErrNotFound)
+	})
 }

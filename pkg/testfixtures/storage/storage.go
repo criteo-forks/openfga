@@ -73,6 +73,8 @@ func (m memoryTestContainer) GetSecondaryConnectionURI(includeCredentials bool) 
 // NOTE: The caller is responsible for cleanup.
 func RunDatastoreTestContainer(t testing.TB, engine string) DatastoreTestContainer {
 	switch engine {
+	case "mssql":
+		return RunMSSQLTestContainer(t)
 	case "mysql":
 		return RunMysqlTestContainer(t)
 	case "postgres":

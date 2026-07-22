@@ -67,6 +67,7 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 	storagefixtures.CleanupPostgresContainer()
+	storagefixtures.CleanupMSSQLContainer()
 	storagefixtures.CleanupMysqlContainer()
 	os.Exit(code)
 }
@@ -909,6 +910,9 @@ func TestServerMetricsReporting(t *testing.T) {
 	})
 	const nonPgxPrometheusMetrics = "go_sql_idle_connections"
 	const pgxPrometheusMetrics = "pgxpool_idle_conns"
+	t.Run("mssql", func(t *testing.T) {
+		testServerMetricsReporting(t, "mssql", nonPgxPrometheusMetrics)
+	})
 	t.Run("mysql", func(t *testing.T) {
 		testServerMetricsReporting(t, "mysql", nonPgxPrometheusMetrics)
 	})
@@ -1815,6 +1819,20 @@ func TestServerContext_datastoreConfig(t *testing.T) {
 			wantDSType:     nil,
 			wantSerializer: nil,
 			wantErr:        errors.New("invalid semicolon separator in query"),
+		},
+		{
+			name: "mssql_bad_uri",
+			config: &serverconfig.Config{
+				Datastore: serverconfig.DatastoreConfig{
+					Engine:   "mssql",
+					Username: "sa",
+					Password: "password",
+					URI:      "~!@#$%^&*()_+}{:<>?",
+				},
+			},
+			wantDSType:     nil,
+			wantSerializer: nil,
+			wantErr:        errors.New("parse mssql connection uri"),
 		},
 		{
 			name: "mysql_bad_uri",

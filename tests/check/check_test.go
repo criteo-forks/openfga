@@ -47,6 +47,10 @@ func TestMatrixPostgres(t *testing.T) {
 	runMatrixWithEngine(t, "postgres")
 }
 
+func TestMatrixMSSQL(t *testing.T) {
+	runMatrixWithEngine(t, "mssql")
+}
+
 func TestMatrixMysql(t *testing.T) {
 	runMatrixWithEngine(t, "mysql")
 }
@@ -79,6 +83,10 @@ func TestCheckMemory(t *testing.T) {
 
 func TestCheckPostgres(t *testing.T) {
 	testRunAll(t, "postgres", config.ExperimentalCheckOptimizations)
+}
+
+func TestCheckMSSQL(t *testing.T) {
+	testRunAll(t, "mssql", config.ExperimentalCheckOptimizations)
 }
 
 func TestCheckMySQL(t *testing.T) {

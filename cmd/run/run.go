@@ -78,6 +78,7 @@ import (
 	"github.com/openfga/openfga/pkg/server/health"
 	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/storage/memory"
+	"github.com/openfga/openfga/pkg/storage/mssql"
 	"github.com/openfga/openfga/pkg/storage/mysql"
 	"github.com/openfga/openfga/pkg/storage/postgres"
 	"github.com/openfga/openfga/pkg/storage/sqlcommon"
@@ -196,7 +197,7 @@ func NewRunCommand() *cobra.Command {
 
 	flags.String("datastore-uri", defaultConfig.Datastore.URI, "the connection uri to use to connect to the datastore (for any engine other than 'memory')")
 
-	flags.String("datastore-secondary-uri", defaultConfig.Datastore.SecondaryURI, "the connection uri to use to connect to the secondary datastore (for postgres only)")
+	flags.String("datastore-secondary-uri", defaultConfig.Datastore.SecondaryURI, "the connection uri to use to connect to the secondary datastore (for mssql & postgres only)")
 
 	flags.String("datastore-username", "", "the connection username to use to connect to the datastore (overwrites any username provided in the connection uri)")
 
@@ -514,6 +515,11 @@ func (s *ServerContext) datastoreConfig(config *serverconfig.Config) (storage.Op
 			memory.WithMaxTuplesPerWrite(config.MaxTuplesPerWrite),
 		}
 		datastore = memory.New(opts...)
+	case "mssql":
+		datastore, err = mssql.New(config.Datastore.URI, dsCfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("initialize mssql datastore: %w", err)
+		}
 	case "mysql":
 		datastore, err = mysql.New(config.Datastore.URI, dsCfg)
 		if err != nil {
