@@ -62,9 +62,18 @@ generate-mocks: $(GO_BIN)/mockgen ## Generate mock stubs
 #-----------------------------------------------------------------------------------------------------------------------
 .PHONY: build install
 
+PACKAGE = "github.com/openfga/openfga/internal/build"
+VERSION = $(shell git rev-parse --abbrev-ref HEAD)
+COMMIT = $(shell git show HEAD --format="%h" --no-patch)
+DATE = $(shell date --iso-8601=seconds)
+
 build: ## Build the OpenFGA service binary. Build directory can be overridden using BUILD_DIR="desired/path", default is ".dist/". Usage `BUILD_DIR="." make build`
 	${call print, "Building the OpenFGA binary within ${BUILD_DIR}/${BINARY_NAME}"}
-	@go build -v -o "${BUILD_DIR}/${BINARY_NAME}" "$(CURDIR)/cmd/openfga"
+
+	@go build -v -ldflags \
+		"-X ${PACKAGE}.Version=${VERSION} -X ${PACKAGE}.Commit=${COMMIT} -X ${PACKAGE}.Date=${DATE}" \
+		-o "${BUILD_DIR}/${BINARY_NAME}" \
+		"$(CURDIR)/cmd/openfga"
 
 install: ## Install the OpenFGA service within $GO_BIN. Ensure that $GO_BIN is available on the $PATH to run the executable from anywhere
 	${call print, "Installing the OpenFGA binary within ${GO_BIN}"}
